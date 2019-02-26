@@ -20,6 +20,7 @@ options:
       url: https://repo.maven.apache.org/maven2/
   transitivity: runtime_deps
   versionConflictPolicy: highest
+  strictVisibility: false
 
 dependencies:
   com.beust:
@@ -65,8 +66,14 @@ dependencies:
   io.netty:
     netty:
       lang: java
-      modules: [ "handler" ]
+      modules: [ "all" ]
       version: "4.1.17.Final"
     netty-tcnative-boringssl-static:
       lang: java
       version: "2.0.7.Final"
+
+  org.mockito:
+    mockito-all:
+      lang: java
+      version: "1.10.19"
+

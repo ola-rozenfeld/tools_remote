@@ -27,7 +27,8 @@ java_library(
         "//external:jar/io/grpc/grpc_auth"
     ],
     runtime_deps = [
-        "//3rdparty/jvm/com/google/auth:google_auth_library_credentials"
+        "//3rdparty/jvm/com/google/auth:google_auth_library_credentials",
+        ":grpc_core"
     ],
     visibility = [
         "//visibility:public"
@@ -59,7 +60,8 @@ java_library(
         "//3rdparty/jvm/com/google/guava:guava",
         "//3rdparty/jvm/com/google/instrumentation:instrumentation_api",
         "//3rdparty/jvm/io/opencensus:opencensus_api",
-        "//3rdparty/jvm/io/opencensus:opencensus_contrib_grpc_metrics"
+        "//3rdparty/jvm/io/opencensus:opencensus_contrib_grpc_metrics",
+        ":grpc_context"
     ],
     visibility = [
         "//visibility:public"
@@ -75,7 +77,8 @@ java_library(
     ],
     runtime_deps = [
         "//3rdparty/jvm/io/netty:netty_codec_http2",
-        "//3rdparty/jvm/io/netty:netty_handler_proxy"
+        "//3rdparty/jvm/io/netty:netty_handler_proxy",
+        ":grpc_core"
     ],
     visibility = [
         "//visibility:public"
@@ -91,7 +94,8 @@ java_library(
     ],
     runtime_deps = [
         "//3rdparty/jvm/com/squareup/okhttp:okhttp",
-        "//3rdparty/jvm/com/squareup/okio:okio"
+        "//3rdparty/jvm/com/squareup/okio:okio",
+        ":grpc_core"
     ],
     visibility = [
         "//visibility:public"
@@ -107,8 +111,10 @@ java_library(
     ],
     runtime_deps = [
         "//3rdparty/jvm/com/google/api/grpc:proto_google_common_protos",
+        "//3rdparty/jvm/com/google/guava:guava",
         "//3rdparty/jvm/com/google/protobuf:protobuf_java",
         "//3rdparty/jvm/com/google/protobuf:protobuf_java_util",
+        ":grpc_core",
         ":grpc_protobuf_lite"
     ],
     visibility = [
@@ -123,6 +129,10 @@ java_library(
     exports = [
         "//external:jar/io/grpc/grpc_protobuf_lite"
     ],
+    runtime_deps = [
+        "//3rdparty/jvm/com/google/guava:guava",
+        ":grpc_core"
+    ],
     visibility = [
         "//visibility:public"
     ]
@@ -136,7 +146,9 @@ java_library(
         "//external:jar/io/grpc/grpc_protobuf_nano"
     ],
     runtime_deps = [
-        "//3rdparty/jvm/com/google/protobuf/nano:protobuf_javanano"
+        "//3rdparty/jvm/com/google/guava:guava",
+        "//3rdparty/jvm/com/google/protobuf/nano:protobuf_javanano",
+        ":grpc_core"
     ],
     visibility = [
         "//visibility:public"
@@ -149,6 +161,9 @@ java_library(
     name = "grpc_stub",
     exports = [
         "//external:jar/io/grpc/grpc_stub"
+    ],
+    runtime_deps = [
+        ":grpc_core"
     ],
     visibility = [
         "//visibility:public"
@@ -164,7 +179,9 @@ java_library(
     ],
     runtime_deps = [
         "//3rdparty/jvm/junit:junit",
-        "//3rdparty/jvm/org/mockito:mockito_core"
+        "//3rdparty/jvm/org/mockito:mockito_core",
+        ":grpc_core",
+        ":grpc_stub"
     ],
     visibility = [
         "//visibility:public"

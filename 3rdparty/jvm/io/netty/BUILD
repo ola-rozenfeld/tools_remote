@@ -1,4 +1,16 @@
 java_library(
+    name = "netty_all",
+    exports = [
+        "//external:jar/io/netty/netty_all"
+    ],
+    visibility = [
+        "//visibility:public"
+    ]
+)
+
+
+
+java_library(
     name = "netty_buffer",
     exports = [
         "//external:jar/io/netty/netty_buffer"
@@ -17,6 +29,9 @@ java_library(
     name = "netty_codec",
     exports = [
         "//external:jar/io/netty/netty_codec"
+    ],
+    runtime_deps = [
+        ":netty_transport"
     ],
     visibility = [
         "//visibility:public"
@@ -61,6 +76,9 @@ java_library(
     exports = [
         "//external:jar/io/netty/netty_codec_socks"
     ],
+    runtime_deps = [
+        ":netty_codec"
+    ],
     visibility = [
         "//visibility:public"
     ]
@@ -103,6 +121,7 @@ java_library(
         "//external:jar/io/netty/netty_handler_proxy"
     ],
     runtime_deps = [
+        ":netty_codec_http",
         ":netty_codec_socks",
         ":netty_transport"
     ],
@@ -117,6 +136,9 @@ java_library(
     name = "netty_resolver",
     exports = [
         "//external:jar/io/netty/netty_resolver"
+    ],
+    runtime_deps = [
+        ":netty_common"
     ],
     visibility = [
         "//visibility:public"
@@ -143,6 +165,7 @@ java_library(
         "//external:jar/io/netty/netty_transport"
     ],
     runtime_deps = [
+        ":netty_buffer",
         ":netty_resolver"
     ],
     visibility = [

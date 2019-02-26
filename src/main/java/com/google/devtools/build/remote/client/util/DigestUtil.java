@@ -12,24 +12,56 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package com.google.devtools.build.remote.client;
+package com.google.devtools.build.remote.client.util;
 
 import static com.google.common.io.MoreFiles.asByteSource;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import build.bazel.remote.execution.v2.Action;
 import build.bazel.remote.execution.v2.Digest;
 import com.google.common.hash.HashCode;
 import com.google.common.hash.HashFunction;
+import com.google.common.hash.HashingOutputStream;
+import com.google.common.io.BaseEncoding;
 import com.google.protobuf.Message;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class DigestUtil {
+  /**
+   * A special type of Digest that is used only as a remote action cache key. This is a separate
+   * type in order to prevent accidentally using other Digests as action keys.
+   */
+  public static final class ActionKey {
+    private final Digest digest;
+
+    public Digest getDigest() {
+      return digest;
+    }
+
+    private ActionKey(Digest digest) {
+      this.digest = digest;
+    }
+  }
+
   private final HashFunction hashFn;
 
   public DigestUtil(HashFunction hashFn) {
     this.hashFn = hashFn;
+  }
+
+  public DigestUtil.ActionKey computeActionKey(Action action) {
+    return new DigestUtil.ActionKey(compute(action));
+  }
+
+  /**
+   * Assumes that the given Digest is a valid digest of an Action, and creates an ActionKey wrapper.
+   * This should not be called on the client side!
+   */
+  public DigestUtil.ActionKey asActionKey(Digest digest) {
+    return new DigestUtil.ActionKey(digest);
   }
 
   public Digest compute(byte[] blob) {
@@ -51,7 +83,7 @@ public class DigestUtil {
 
   public Digest compute(Path path) throws IOException {
     if (!Files.isRegularFile(path)) {
-      throw new IOException("Only can compute hash for regular file.");
+      throw new IOException("File does not exist or is not a regular file: " + path);
     }
     long fileSize = Files.size(path);
     return buildDigest(asByteSource(path).hash(hashFn).asBytes(), fileSize);
@@ -63,6 +95,14 @@ public class DigestUtil {
 
   public static Digest buildDigest(String hexHash, long size) {
     return Digest.newBuilder().setHash(hexHash).setSizeBytes(size).build();
+  }
+
+  public static String hashCodeToString(HashCode hash) {
+    return BaseEncoding.base16().lowerCase().encode(hash.asBytes());
+  }
+
+  public HashingOutputStream newHashingOutputStream(OutputStream out) {
+    return new HashingOutputStream(hashFn, out);
   }
 
   public String toString(Digest digest) {

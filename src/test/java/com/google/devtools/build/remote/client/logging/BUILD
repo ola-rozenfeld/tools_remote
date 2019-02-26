@@ -1,0 +1,22 @@
+java_test(
+    name = "LoggingInterceptorTest",
+    srcs = ["LoggingInterceptorTest.java"],
+    deps = [
+        "//3rdparty/jvm/com/google/guava",
+        "//3rdparty/jvm/com/google/truth",
+        "//3rdparty/jvm/io/grpc:grpc_stub",
+        "//src/main/java/com/google/devtools/build/remote/client/logging",
+        "//src/main/java/com/google/devtools/build/remote/client/util",
+        "//src/main/proto:remote_execution_log_java_proto",
+        "@com_google_protobuf_protobuf_java//jar",
+        "@googleapis//:google_bytestream_bytestream_java_grpc",
+        "@googleapis//:google_bytestream_bytestream_java_proto",
+        "@googleapis//:google_longrunning_operations_java_proto",
+        "@googleapis//:google_rpc_error_details_java_proto",
+        "@googleapis//:google_rpc_status_java_proto",
+        "@io_grpc_grpc_core//jar",
+        "@org_mockito_mockito_all//jar",
+        "@remoteapis//:remote_execution_java_grpc",
+        "@remoteapis//build/bazel/remote/execution/v2:remote_execution_java_proto",
+    ],
+)

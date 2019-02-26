@@ -19,11 +19,19 @@ import com.beust.jcommander.IStringConverter;
 import com.beust.jcommander.Parameter;
 import com.beust.jcommander.ParameterException;
 import com.beust.jcommander.Parameters;
+import com.beust.jcommander.converters.EnumConverter;
 import com.beust.jcommander.converters.FileConverter;
 import com.beust.jcommander.converters.PathConverter;
+import com.beust.jcommander.converters.IParameterSplitter;
+import com.google.common.collect.ImmutableList;
+import com.google.devtools.build.lib.remote.proxy.RunResult.Status;
+import com.google.devtools.build.remote.client.util.DigestUtil;
 import java.io.File;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /** Options for operation of a remote client. */
 @Parameters(separators = "=")
@@ -33,6 +41,18 @@ public final class RemoteClientOptions {
 
   @Parameter(names = "--grpc_log", description = "GRPC log to reference for additional information")
   public String grpcLog = "";
+
+  @Parameter(
+      names = "--dynamic_inputs",
+      variableArity = true,
+      converter = PathConverter.class,
+      description = "Input directories relative to the exec_root that can change between actions.")
+  public List<Path> dynamicInputs = null;
+
+  @Parameter(
+      names = "--proxy",
+      description = "Optional address of the remote_client_proxy server as HOST:PORT.")
+  public String proxy = "";
 
   @Parameters(
       commandDescription = "Recursively lists a Directory in remote cache.",
@@ -151,6 +171,22 @@ public final class RemoteClientOptions {
     public int limit = 100;
   }
 
+  @Parameters(
+      commandDescription = "Parse and display an Command.",
+      separators = "=")
+  public static class ShowCommandCommand {
+    @Parameter(
+        names = {"--digest", "-d"},
+        converter = DigestConverter.class,
+        description = "Command digest in the form hex_hash/size_bytes.")
+    public Digest digest = null;
+
+    @Parameter(
+        names = {"--limit", "-l"},
+        description = "The maximum number of input/output files to list.")
+    public int limit = 100;
+  }
+
   @Parameters(commandDescription = "Parse and display an ActionResult.", separators = "=")
   public static class ShowActionResultCommand {
     @Parameter(
@@ -184,7 +220,7 @@ public final class RemoteClientOptions {
 
   @Parameters(
       commandDescription =
-          "Sets up a directory and Docker command to locally run a single action"
+          "Sets up a directory and Docker command to locally run a single action "
               + "given its Action proto. This requires the Action's inputs to be stored in CAS so that "
               + "they can be retrieved.",
       separators = "=")
@@ -210,6 +246,165 @@ public final class RemoteClientOptions {
     public Path path = null;
   }
 
+  @Parameters(
+      commandDescription =
+          "Runs a command remotely, uploading all required inputs to CAS, and downloading outputs.",
+      separators = "=")
+  public static class RunRemoteCommand {
+    @Parameter(
+        names = "--build_request_id",
+        description = "An optional UUID to use for remote server requests to identify a build.")
+    public String buildRequestId = "";
+
+    @Parameter(
+        names = "--invocation_id",
+        description = "An optional UUID to use for remote server requests to identify an invocation.")
+    public String invocationId = "";
+
+    @Parameter(
+        names = "--tool_name",
+        description = "An optional tool name to provide to the remote server.")
+    public String toolName = "";
+
+    @Parameter(
+        names = "--name",
+        description = "An optional identifier of this command.")
+    public String name = "";
+
+    @Parameter(
+        names = "--accept_cached",
+        arity=1,
+        description = "Whether to accept remotely cached action results.")
+    public boolean acceptCached = true;
+
+    @Parameter(
+        names = "--do_not_cache",
+        arity=1,
+        description = "When set, this action results will not be cached remotely.")
+    public boolean doNotCache = false;
+
+    @Parameter(
+        names = "--inputs",
+        variableArity = true,
+        converter = PathConverter.class,
+        description = "Input paths (files or directories) relative to exec root to include for "+
+            "command execution.")
+    public List<Path> inputs = null;
+
+    @Parameter(
+        names = "--output_files",
+        variableArity = true,
+        converter = PathConverter.class,
+        description = "Output files relative to exec root to download after command executes.")
+    public List<Path> outputFiles = null;
+
+    @Parameter(
+        names = "--output_directories",
+        variableArity = true,
+        converter = PathConverter.class,
+        description = "Output files relative to exec root to download after command executes.")
+    public List<Path> outputDirectories = null;
+
+    @Parameter(
+        names = "--command",
+        variableArity = true,
+        splitter = NoSplittingSplitter.class,
+        description = "Command line elements to execute.")
+    public List<String> command = null;
+
+    @Parameter(
+        names = "--ignore_inputs",
+        variableArity = true,
+        description = "Inputs to ignore, as regular expressions.")
+    public List<String> ignoreInputs = null;
+
+    @Parameter(
+        names = "--environment_variables",
+        converter = MapConverter.class,
+        description = "Environment variables to pass through to remote execution, formatted as a " +
+            "comma-separated list of <variable_name>=value pairs.")
+    public Map<String,String> environmentVariables = null;
+
+    @Parameter(
+        names = "--platform",
+        converter = MapConverter.class,
+        description = "The platform to use for the remote execution, formatted as a " +
+            "comma-separated list of <property_name>=value pairs.")
+    public Map<String,String> platform = null;
+
+    @Parameter(
+        names = "--server_logs_path",
+        converter = PathConverter.class,
+        description = "Optional path to save server logs for failed actions.")
+    public Path serverLogsPath = null;
+
+    @Parameter(
+        names = "--execution_timeout",
+        description = "The maximum number of seconds to wait for remote action execution.")
+    public int executionTimeout = 0;
+
+    @Parameter(
+        names = "--local_fallback",
+        arity=1,
+        description = "When set, the action will be run locally if it fails remotely.")
+    public boolean localFallback = false;
+  }
+
+  @Parameters(
+      commandDescription = "Queries the current stats of a remote client proxy.",
+      separators = "=")
+  public static class ProxyStatsCommand {
+    @Parameter(
+        names = "--full",
+        arity=1,
+        description = "Whether to get the full list of records.")
+    public boolean full = false;
+
+    @Parameter(
+        names = "--invocation_id",
+        description = "A particular invocation id to get the stats for.")
+    public String invocationId = "";
+
+    @Parameter(
+        names = "--from_ts",
+        description = "A timestamp (seconds from epoch) to collect stats from.")
+    public long fromTs = 0;
+
+    @Parameter(
+        names = "--to_ts",
+        description = "A timestamp (seconds from epoch) to collect stats to.")
+    public long toTs = 0;
+
+    @Parameter(
+        names = "--status",
+        description = "An action status to filter by.",
+        converter = StatusConverter.class)
+    public Status status = Status.UNKNOWN;
+  }
+
+  @Parameters(
+      commandDescription = "Prints an executed command from a remote client proxy.",
+      separators = "=")
+  public static class ProxyPrintRemoteCommand {
+    @Parameter(
+        names = "--command_id",
+        description = "The command to print.")
+    public String commandId = "";
+  }
+
+  public static final class StatusConverter extends EnumConverter<Status> {
+    StatusConverter(String optionName, Class<Status> clazz) {
+      super(optionName, clazz);
+    }
+  }
+
+  public static class NoSplittingSplitter implements IParameterSplitter {
+    @Override
+    public List<String> split(String value) {
+      return ImmutableList.of(value);
+    }
+  }
+
   /** Converter for hex_hash/size_bytes string to a Digest object. */
   public static class DigestConverter implements IStringConverter<Digest> {
     @Override
@@ -224,6 +419,22 @@ public final class RemoteClientOptions {
       } catch (NumberFormatException e) {
         throw new ParameterException("'" + input + "' is not a hex_hash/size_bytes: " + e);
       }
+    }
+  }
+
+  /** Converter for string to a Map of strings. */
+  public static class MapConverter implements IStringConverter<Map<String,String>> {
+    @Override
+    public Map<String,String> convert(String value) {
+      Map<String,String> result = new HashMap<>();
+      for (String pair : value.split(",")) {
+        int eq = pair.indexOf("=");
+        if (eq < 0) {
+          throw new ParameterException("'" + value + "' is not a list of name=value pairs");
+        }
+        result.put(pair.substring(0, eq),  pair.substring(eq+1));
+      }
+      return result;
     }
   }
 }

@@ -4,6 +4,7 @@ licenses(["notice"])
 
 exports_files(["LICENSE"])
 
+load("@com_github_grpc_grpc//bazel:cc_grpc_library.bzl", "cc_grpc_library")
 load("@//third_party/grpc_java:java_grpc_library.bzl", "java_grpc_library")
 
 java_proto_library(
@@ -140,6 +141,19 @@ proto_library(
     ],
 )
 
+cc_grpc_library(
+    name = "google_longrunning_operations_cc_proto",
+    srcs = ["google/longrunning/operations.proto"],
+    deps = [
+        ":google_api_annotations_cc_proto",
+        ":google_api_http_cc_proto",
+        ":google_rpc_status_cc_proto",
+    ],
+    proto_only = False,
+    well_known_protos = True,
+    use_external = False,
+)
+
 proto_library(
     name = "google_devtools_build_v1_build_status_proto",
     srcs = ["google/devtools/build/v1/build_status.proto"],
@@ -184,15 +198,44 @@ proto_library(
     ],
 )
 
+cc_grpc_library(
+    name = "google_api_annotations_cc_proto",
+    srcs = ["google/api/annotations.proto"],
+    deps = [
+        ":google_api_http_cc_proto",
+    ],
+    proto_only = False,
+    well_known_protos = True,
+    use_external = False,
+)
+
 proto_library(
     name = "google_api_http_proto",
     srcs = ["google/api/http.proto"],
+)
+
+cc_grpc_library(
+    name = "google_api_http_cc_proto",
+    srcs = ["google/api/http.proto"],
+    deps = [],
+    proto_only = False,
+    well_known_protos = True,
+    use_external = False,
 )
 
 proto_library(
     name = "google_rpc_status_proto",
     srcs = ["google/rpc/status.proto"],
     deps = ["@com_google_protobuf//:any_proto"],
+)
+
+cc_grpc_library(
+    name = "google_rpc_status_cc_proto",
+    srcs = ["google/rpc/status.proto"],
+    deps = [],
+    proto_only = False,
+    well_known_protos = True,
+    use_external = False,
 )
 
 proto_library(

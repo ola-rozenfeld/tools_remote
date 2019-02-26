@@ -21,6 +21,7 @@ import com.google.bytestream.ByteStreamProto.ReadRequest;
 import com.google.bytestream.ByteStreamProto.ReadResponse;
 import com.google.common.collect.ImmutableMap;
 import com.google.protobuf.ByteString;
+import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.util.HashMap;
 import java.util.Map;
@@ -54,11 +55,24 @@ class FakeImmutableCacheByteStreamImpl extends ByteStreamImplBase {
     cannedReplies = b.build();
     numErrors = new HashMap<>();
   }
+  public FakeImmutableCacheByteStreamImpl(Digest digest, String contents) {
+    this(ImmutableMap.of(digest, contents));
+  }
+
+  public FakeImmutableCacheByteStreamImpl(Digest d1, String c1, Digest d2, String c2) {
+    this(ImmutableMap.of(d1, c1, d2, c2));
+  }
 
   @Override
   public void read(ReadRequest request, StreamObserver<ReadResponse> responseObserver) {
     assertThat(cannedReplies.keySet()).contains(request);
-    responseObserver.onNext(cannedReplies.get(request));
-    responseObserver.onCompleted();
+    int errCount = numErrors.getOrDefault(request, 0);
+    if (errCount < MAX_ERRORS) {
+      numErrors.put(request, errCount + 1);
+      responseObserver.onError(Status.UNAVAILABLE.asRuntimeException());  // Retriable error.
+    } else {
+      responseObserver.onNext(cannedReplies.get(request));
+      responseObserver.onCompleted();
+    }
   }
 }

@@ -27,13 +27,30 @@ import build.bazel.remote.execution.v2.FileNode;
 import build.bazel.remote.execution.v2.OutputDirectory;
 import build.bazel.remote.execution.v2.OutputFile;
 import build.bazel.remote.execution.v2.Platform;
-import build.bazel.remote.execution.v2.RequestMetadata;
 import build.bazel.remote.execution.v2.ToolDetails;
 import build.bazel.remote.execution.v2.Tree;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.ParameterException;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
 import com.google.common.hash.Hashing;
+import com.google.common.base.Throwables;
 import com.google.common.io.Files;
+import com.google.common.util.concurrent.ListeningScheduledExecutorService;
+import com.google.common.util.concurrent.MoreExecutors;
+import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc;
+import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc.CommandServiceBlockingStub;
+import com.google.devtools.build.lib.remote.proxy.FetchRecordRequest;
+import com.google.devtools.build.lib.remote.proxy.FetchRecordResponse;
+import com.google.devtools.build.lib.remote.proxy.LocalTimestamps;
+import com.google.devtools.build.lib.remote.proxy.RunCommandParameters;
+import com.google.devtools.build.lib.remote.proxy.RunRecord;
+import com.google.devtools.build.lib.remote.proxy.RunRecord.Stage;
+import com.google.devtools.build.lib.remote.proxy.RunRequest;
+import com.google.devtools.build.lib.remote.proxy.RunResponse;
+import com.google.devtools.build.lib.remote.proxy.RunResult;
+import com.google.devtools.build.lib.remote.proxy.StatsRequest;
+import com.google.devtools.build.lib.remote.proxy.StatsResponse;
 import com.google.devtools.build.remote.client.LogParserUtils.ParamException;
 import com.google.devtools.build.remote.client.RemoteClientOptions.CatCommand;
 import com.google.devtools.build.remote.client.RemoteClientOptions.FailedActionsCommand;
@@ -42,11 +59,35 @@ import com.google.devtools.build.remote.client.RemoteClientOptions.GetOutDirComm
 import com.google.devtools.build.remote.client.RemoteClientOptions.LsCommand;
 import com.google.devtools.build.remote.client.RemoteClientOptions.LsOutDirCommand;
 import com.google.devtools.build.remote.client.RemoteClientOptions.PrintLogCommand;
+import com.google.devtools.build.remote.client.RemoteClientOptions.ProxyPrintRemoteCommand;
+import com.google.devtools.build.remote.client.RemoteClientOptions.ProxyStatsCommand;
 import com.google.devtools.build.remote.client.RemoteClientOptions.RunCommand;
+import com.google.devtools.build.remote.client.RemoteClientOptions.RunRemoteCommand;
 import com.google.devtools.build.remote.client.RemoteClientOptions.ShowActionCommand;
 import com.google.devtools.build.remote.client.RemoteClientOptions.ShowActionResultCommand;
+import com.google.devtools.build.remote.client.RemoteClientOptions.ShowCommandCommand;
+import com.google.devtools.build.remote.client.logging.LoggingInterceptor;
+import com.google.devtools.build.remote.client.util.AsynchronousFileOutputStream;
+import com.google.devtools.build.remote.client.util.Clock;
+import com.google.devtools.build.remote.client.util.DigestUtil;
+import com.google.devtools.build.remote.client.util.DockerUtil;
+import com.google.devtools.build.remote.client.util.JavaClock;
+import com.google.devtools.build.remote.client.util.ShellEscaper;
+import com.google.devtools.build.remote.client.util.TracingMetadataUtils;
+import com.google.devtools.build.remote.client.util.Utils;
+import com.google.protobuf.Any;
 import com.google.protobuf.TextFormat;
+import com.google.protobuf.Timestamp;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.rpc.PreconditionFailure;
+import com.google.rpc.PreconditionFailure.Violation;
+import io.grpc.CallCredentials;
+import io.grpc.ClientInterceptor;
+import io.grpc.Context;
+import io.grpc.ManagedChannel;
 import io.grpc.Status;
+import io.grpc.Status.Code;
+import io.grpc.protobuf.StatusProto;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -56,23 +97,118 @@ import java.io.OutputStream;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
+import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 /** A standalone client for interacting with remote caches in Bazel. */
 public class RemoteClient {
 
-  private final AbstractRemoteActionCache cache;
-  private final DigestUtil digestUtil;
+  private final DigestUtil digestUtil = new DigestUtil(Hashing.sha256());
+  private final Clock clock = new JavaClock();
+  private AbstractRemoteActionCache cache;
+  private RemoteRunner runner;
+  private AsynchronousFileOutputStream rpcLogFile;
+  private RemoteClientOptions clientOptions;
+  private RemoteOptions remoteOptions;
+  private AuthAndTLSOptions authAndTlsOptions;
+  private CommandServiceBlockingStub proxyStub;
 
-  private RemoteClient(AbstractRemoteActionCache cache) {
-    this.cache = cache;
-    this.digestUtil = cache.getDigestUtil();
+  public RemoteClient(
+      RemoteOptions remoteOptions,
+      RemoteClientOptions clientOptions,
+      AuthAndTLSOptions authAndTlsOptions) throws IOException {
+    this.remoteOptions = remoteOptions;
+    this.clientOptions = clientOptions;
+    this.authAndTlsOptions = authAndTlsOptions;
+    if (clientOptions.dynamicInputs == null) {
+      clientOptions.dynamicInputs = new ArrayList<>();
+    }
+    if (!Strings.isNullOrEmpty(clientOptions.proxy)) {
+      // Initialize proxy channel and stub.
+      ManagedChannel channel = GoogleAuthUtils.newChannel(clientOptions.proxy, authAndTlsOptions);
+      CallCredentials credentials = GoogleAuthUtils.newCallCredentials(authAndTlsOptions);
+      proxyStub = CommandServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+      return;
+    }
+    if (!GrpcRemoteCache.isRemoteCacheOptions(remoteOptions)) {
+      return;
+    }
+    List<ClientInterceptor> interceptors = new ArrayList<>();
+    if (!Strings.isNullOrEmpty(clientOptions.grpcLog)) {
+      rpcLogFile = new AsynchronousFileOutputStream(clientOptions.grpcLog);
+      interceptors.add(new LoggingInterceptor(rpcLogFile, clock));
+    }
+    ReferenceCountedChannel cacheChannel =
+        new ReferenceCountedChannel(
+            GoogleAuthUtils.newChannel(
+                remoteOptions.remoteCache,
+                authAndTlsOptions,
+                interceptors.toArray(new ClientInterceptor[0])));
+    RemoteRetrier rpcRetrier = RemoteRetrier.newRpcRetrier(remoteOptions.remoteRetry);
+    CallCredentials credentials = GoogleAuthUtils.newCallCredentials(authAndTlsOptions);
+    ByteStreamUploader uploader =
+        new ByteStreamUploader.Builder()
+            .setInstanceName(remoteOptions.remoteInstanceName)
+            .setChannel(cacheChannel.retain())
+            .setCallCredentials(credentials)
+            .setCallTimeoutSecs(60 * 15) // 15 minutes for each upload.
+            .setRetrier(rpcRetrier)
+            .setBatchMaxNumBlobs(4000)
+            .setBatchMaxSize(4 * 1024 * 1024 - 1024)
+            .setVerbosity(remoteOptions.verbosity)
+            .build();
+    cacheChannel.release();
+    cache = new GrpcRemoteCache.Builder()
+        .setCallCredentials(credentials)
+        .setChannel(cacheChannel.retain())
+        .setRemoteOptions(remoteOptions)
+        .setRetrier(rpcRetrier)
+        .setDigestUtil(digestUtil)
+        .setUploader(uploader.retain())
+        .build();
+    uploader.release();
+    if (Strings.isNullOrEmpty(remoteOptions.remoteExecutor)) {
+      return;
+    }
+
+    ReferenceCountedChannel execChannel =
+        remoteOptions.remoteCache.equals(remoteOptions.remoteExecutor) ?
+            cacheChannel.retain() :
+            new ReferenceCountedChannel(
+                GoogleAuthUtils.newChannel(
+                    remoteOptions.remoteExecutor,
+                    authAndTlsOptions,
+                    interceptors.toArray(new ClientInterceptor[0])));
+    RemoteRetrier execRetrier = RemoteRetrier.newExecRpcRetrier(remoteOptions.remoteRetry);
+    GrpcRemoteExecutor executor =
+        new GrpcRemoteExecutor(
+            execChannel.retain(),
+            GoogleAuthUtils.newCallCredentials(authAndTlsOptions),
+            execRetrier);
+    execChannel.release();
+    runner = new RemoteRunner(
+        remoteOptions, clientOptions, digestUtil, (GrpcRemoteCache)cache, executor, clock);
+  }
+
+  public int verbosity() {
+    return remoteOptions.verbosity;
   }
 
   public AbstractRemoteActionCache getCache() {
-    return cache;
+    return Preconditions.checkNotNull(cache, "--remote_cache must be set");
+  }
+
+  public RemoteRunner getRunner() {
+    return Preconditions.checkNotNull(runner, "--remote_executor must be set");
   }
 
   // Prints the details (path and digest) of a DirectoryNode.
@@ -128,7 +264,8 @@ public class RemoteClient {
   }
 
   // Recursively list OutputDirectory with digests.
-  private void listOutputDirectory(OutputDirectory dir, int limit) throws IOException {
+  private void listOutputDirectory(OutputDirectory dir, int limit)
+      throws IOException, InterruptedException {
     Tree tree;
     try {
       tree = Tree.parseFrom(cache.downloadBlob(dir.getTreeDigest()));
@@ -191,7 +328,7 @@ public class RemoteClient {
 
   // Output for print action command.
   private void printActionV1(com.google.devtools.remoteexecution.v1test.Action action, int limit)
-      throws IOException {
+      throws IOException, InterruptedException {
     // Note: Command V2 is backward compatible to V1. It adds fields but does not remove them, so we
     // can use it here.
     Command command = getCommand(toV2(action.getCommandDigest()));
@@ -219,7 +356,7 @@ public class RemoteClient {
     }
   }
 
-  private Action getAction(Digest actionDigest) throws IOException {
+  private Action getAction(Digest actionDigest) throws IOException, InterruptedException {
     Action action;
     try {
       action = Action.parseFrom(cache.downloadBlob(actionDigest));
@@ -229,7 +366,7 @@ public class RemoteClient {
     return action;
   }
 
-  private Command getCommand(Digest commandDigest) throws IOException {
+  private Command getCommand(Digest commandDigest) throws IOException, InterruptedException {
     Command command;
     try {
       command = Command.parseFrom(cache.downloadBlob(commandDigest));
@@ -250,7 +387,8 @@ public class RemoteClient {
   }
 
   // Output for print action command.
-  private void printAction(Digest actionDigest, int limit) throws IOException {
+  private void printAction(Digest actionDigest, int limit)
+      throws IOException, InterruptedException {
     Action action = getAction(actionDigest);
     Command command = getCommand(action.getCommandDigest());
 
@@ -290,7 +428,8 @@ public class RemoteClient {
   }
 
   // Output for print action result command.
-  private void printActionResult(ActionResult result, int limit) throws IOException {
+  private void printActionResult(ActionResult result, int limit)
+      throws IOException, InterruptedException {
     System.out.println("Output files:");
     result.getOutputFilesList().stream().limit(limit).forEach(name -> printOutputFile(name));
     if (result.getOutputFilesList().size() > limit) {
@@ -330,7 +469,7 @@ public class RemoteClient {
   // Given a docker run action, sets up a directory for an Action to be run in (download Action
   // inputs, set up output directories), and display a docker command that will run the Action.
   private void setupDocker(com.google.devtools.remoteexecution.v1test.Action action, Path root)
-      throws IOException {
+      throws IOException, InterruptedException {
     com.google.devtools.remoteexecution.v1test.Command command;
     try {
       command =
@@ -361,12 +500,13 @@ public class RemoteClient {
 
   // Given a docker run action, sets up a directory for an Action to be run in (download Action
   // inputs, set up output directories), and display a docker command that will run the Action.
-  private void setupDocker(Action action, Path root) throws IOException {
+  private void setupDocker(Action action, Path root) throws IOException, InterruptedException {
     Command command = getCommand(action.getCommandDigest());
     setupDocker(command, action.getInputRootDigest(), root);
   }
 
-  private void setupDocker(Command command, Digest inputRootDigest, Path root) throws IOException {
+  private void setupDocker(Command command, Digest inputRootDigest, Path root)
+      throws IOException, InterruptedException {
     System.out.printf("Setting up Action in directory %s...\n", root.toAbsolutePath());
 
     try {
@@ -397,66 +537,67 @@ public class RemoteClient {
     System.out.println("  " + dockerCommand);
   }
 
-  private static RemoteClient makeClientWithOptions(
-      RemoteOptions remoteOptions, AuthAndTLSOptions authAndTlsOptions) throws IOException {
-    DigestUtil digestUtil = new DigestUtil(Hashing.sha256());
-    AbstractRemoteActionCache cache;
-
-    if (GrpcRemoteCache.isRemoteCacheOptions(remoteOptions)) {
-      cache = new GrpcRemoteCache(remoteOptions, authAndTlsOptions, digestUtil);
-      RequestMetadata metadata =
-          RequestMetadata.newBuilder()
-              .setToolDetails(ToolDetails.newBuilder().setToolName("remote_client"))
-              .build();
-      TracingMetadataUtils.contextWithMetadata(metadata).attach();
-    } else {
-      throw new UnsupportedOperationException("Only gRPC remote cache supported currently.");
-    }
-    return new RemoteClient(cache);
-  }
-
-  private static void doPrintLog(String grpcLogFile, PrintLogCommand options) throws IOException {
-    LogParserUtils parser = new LogParserUtils(grpcLogFile);
+  private void doPrintLog(PrintLogCommand options) throws IOException {
+    LogParserUtils parser = new LogParserUtils(clientOptions.grpcLog);
     parser.printLog(options);
   }
 
-  private static void doFailedActions(String grpcLogFile, FailedActionsCommand options)
+  private void doFailedActions(FailedActionsCommand options)
       throws IOException, ParamException {
-    LogParserUtils parser = new LogParserUtils(grpcLogFile);
+    LogParserUtils parser = new LogParserUtils(clientOptions.grpcLog);
     parser.printFailedActions();
   }
 
-  private static void doLs(LsCommand options, RemoteClient client) throws IOException {
-    Tree tree = client.getCache().getTree(options.digest);
-    client.listTree(Paths.get(""), tree, options.limit);
+  private void doLs(LsCommand options) throws IOException, InterruptedException {
+    Context withMetadata = TracingMetadataUtils.contextWithMetadata("ls");
+    Context previous = withMetadata.attach();
+    try {
+      Tree tree = getCache().getTree(options.digest);
+      listTree(Paths.get(""), tree, options.limit);
+    } finally {
+      withMetadata.detach(previous);
+    }
   }
 
-  private static void doLsOutDir(LsOutDirCommand options, RemoteClient client) throws IOException {
+  private void doLsOutDir(LsOutDirCommand options) throws IOException, InterruptedException {
+    Context withMetadata = TracingMetadataUtils.contextWithMetadata("lsoutdir");
+    Context previous = withMetadata.attach();
     OutputDirectory dir;
     try {
-      dir = OutputDirectory.parseFrom(client.getCache().downloadBlob(options.digest));
+      dir = OutputDirectory.parseFrom(getCache().downloadBlob(options.digest));
+      listOutputDirectory(dir, options.limit);
     } catch (IOException e) {
       throw new IOException("Failed to obtain OutputDirectory.", e);
+    } finally {
+      withMetadata.detach(previous);
     }
-    client.listOutputDirectory(dir, options.limit);
   }
 
-  private static void doGetDir(GetDirCommand options, RemoteClient client) throws IOException {
-    client.getCache().downloadDirectory(options.path, options.digest);
+  private void doGetDir(GetDirCommand options) throws IOException, InterruptedException {
+    Context withMetadata = TracingMetadataUtils.contextWithMetadata("getdir");
+    Context previous = withMetadata.attach();
+    try {
+      getCache().downloadDirectory(options.path, options.digest);
+    } finally {
+      withMetadata.detach(previous);
+    }
   }
 
-  private static void doGetOutDir(GetOutDirCommand options, RemoteClient client)
-      throws IOException {
+  private void doGetOutDir(GetOutDirCommand options) throws IOException, InterruptedException {
+    Context withMetadata = TracingMetadataUtils.contextWithMetadata("getoutdir");
+    Context previous = withMetadata.attach();
     OutputDirectory dir;
     try {
-      dir = OutputDirectory.parseFrom(client.getCache().downloadBlob(options.digest));
+      dir = OutputDirectory.parseFrom(getCache().downloadBlob(options.digest));
+      getCache().downloadOutputDirectory(dir, options.path);
     } catch (IOException e) {
       throw new IOException("Failed to obtain OutputDirectory.", e);
+    } finally {
+      withMetadata.detach(previous);
     }
-    client.getCache().downloadOutputDirectory(dir, options.path);
   }
 
-  private static void doCat(CatCommand options, RemoteClient client) throws IOException {
+  private void doCat(CatCommand options) throws IOException, InterruptedException {
     OutputStream output;
     if (options.file != null) {
       output = new FileOutputStream(options.file);
@@ -468,41 +609,75 @@ public class RemoteClient {
       output = System.out;
     }
 
+    Context withMetadata = TracingMetadataUtils.contextWithMetadata("cat");
+    Context previous = withMetadata.attach();
+    OutputDirectory dir;
     try {
-      client.getCache().downloadBlob(options.digest, output);
+      getCache().downloadBlob(options.digest, output);
     } catch (CacheNotFoundException e) {
       System.err.println("Error: " + e);
     } finally {
+      withMetadata.detach(previous);
       output.close();
     }
   }
 
-  private static void doShowAction(ShowActionCommand options, RemoteClient client)
-      throws IOException {
+  private void doGenManyInputs() throws IOException {
+    Path path = Paths.get("/usr/local/google/home/olaola/tools_remote/inputs");
+    for (File file: path.toFile().listFiles()) {
+      if (!file.isDirectory()) {
+        file.delete();
+      }
+    }
+    int numInputs = 133331;
+    for (int i = 0; i < numInputs; ++i) {
+      Path subdir = path.resolve(String.format("sub_%d/sub_a_%d", i, i));
+      java.nio.file.Files.createDirectories(subdir);
+      File f = subdir.resolve("file_" + i).toFile();
+      f.createNewFile();
+      FileOutputStream output = new FileOutputStream(f);
+      try {
+        output.write(UUID.randomUUID().toString().getBytes(UTF_8));
+      } finally {
+        output.close();
+      }
+    }
+  }
+
+  private void doShowAction(ShowActionCommand options) throws IOException, InterruptedException {
     if (options.file != null && options.actionDigest != null) {
       System.err.println("Only one of --file or --action_digest should be specified");
       System.exit(1);
     }
     if (options.file != null) {
-      client.printActionV1(getActionV1FromFile(options.file), options.limit);
+      printActionV1(getActionV1FromFile(options.file), options.limit);
     } else if (options.actionDigest != null) {
-      client.printAction(options.actionDigest, options.limit);
+      printAction(options.actionDigest, options.limit);
     } else {
       System.err.println("Specify --file or --action_digest");
       System.exit(1);
     }
   }
 
-  private static void doShowActionResult(ShowActionResultCommand options, RemoteClient client)
-      throws IOException {
+  private void doShowCommand(ShowCommandCommand options) throws IOException, InterruptedException {
+    if (options.digest != null) {
+      printCommand(getCommand(options.digest));
+    } else {
+      System.err.println("Specify --digest");
+      System.exit(1);
+    }
+  }
+
+  private void doShowActionResult(ShowActionResultCommand options)
+      throws IOException, InterruptedException {
     ActionResult.Builder builder = ActionResult.newBuilder();
     FileInputStream fin = new FileInputStream(options.file);
     TextFormat.getParser().merge(new InputStreamReader(fin), builder);
-    client.printActionResult(builder.build(), options.limit);
+    printActionResult(builder.build(), options.limit);
   }
 
-  private static void doRun(String grpcLogFile, RunCommand options, RemoteClient client)
-      throws IOException, ParamException {
+  private void doRun(RunCommand options)
+      throws IOException, InterruptedException, ParamException {
     Path path = options.path != null ? options.path : Files.createTempDir().toPath();
 
     if (options.file != null && options.actionDigest != null) {
@@ -510,11 +685,11 @@ public class RemoteClient {
       System.exit(1);
     }
     if (options.file != null) {
-      client.setupDocker(getActionV1FromFile(options.file), path);
+      setupDocker(getActionV1FromFile(options.file), path);
     } else if (options.actionDigest != null) {
-      client.setupDocker(client.getAction(options.actionDigest), path);
-    } else if (!grpcLogFile.isEmpty()) {
-      LogParserUtils parser = new LogParserUtils(grpcLogFile);
+      setupDocker(getAction(options.actionDigest), path);
+    } else if (!clientOptions.grpcLog.isEmpty()) {
+      LogParserUtils parser = new LogParserUtils(clientOptions.grpcLog);
       List<Digest> actions = parser.failedActions();
       if (actions.size() == 0) {
         System.err.println("No action specified. No failed actions found in GRPC log.");
@@ -528,10 +703,267 @@ public class RemoteClient {
         System.exit(1);
       }
       Digest action = actions.get(0);
-      client.setupDocker(client.getAction(action), path);
+      setupDocker(getAction(action), path);
     } else {
       System.err.println("Specify --file or --action_digest");
       System.exit(1);
+    }
+  }
+
+  private RunResult runRemoteProxy(RunRemoteCommand options, OutErr outErr, String... args) {
+    Preconditions.checkNotNull(proxyStub, "--proxy should be set");
+    Iterator<RunResponse> replies = proxyStub.run(
+        RunRequest.newBuilder().addAllCommand(Arrays.asList(args)).build());
+    RunResult result = null;
+    while (replies.hasNext()) {
+      RunResponse resp = replies.next();
+      if (!resp.getStdout().isEmpty()) {
+        outErr.printOut(resp.getStdout());
+      }
+      if (resp.getStderr().isEmpty()) {
+        outErr.printErr(resp.getStderr());
+      }
+      if (resp.hasResult()) {
+        result = resp.getResult();
+      }
+    } // Always read the entire stream.
+    if (result == null) {
+      return RunResult.newBuilder()
+          .setStatus(RunResult.Status.REMOTE_ERROR)
+          .setExitCode(RemoteRunner.REMOTE_ERROR_EXIT_CODE)
+          .setMessage("Remote client proxy failed to return a run result.")
+          .build();
+    }
+    return result;
+  }
+
+  private static String runCommandParametersToString(RunCommandParameters params) {
+    // TODO(olaola): properly quote this.
+    StringBuilder sb = new StringBuilder();
+    if (!params.getBuildRequestId().isEmpty()) {
+      sb.append("--build_request_id ");
+      sb.append(params.getBuildRequestId());
+      sb.append(" ");
+    }
+    if (!params.getInvocationId().isEmpty()) {
+      sb.append("--invocation_id ");
+      sb.append(params.getInvocationId());
+      sb.append(" ");
+    }
+    if (!params.getName().isEmpty()) {
+      sb.append("--name ");
+      sb.append(params.getName());
+      sb.append(" ");
+    }
+    if (params.getAcceptCached()) {
+      sb.append("--accept_cached ");
+      sb.append(params.getAcceptCached());
+      sb.append(" ");
+    }
+    if (params.getDoNotCache()) {
+      sb.append("--do_not_cache ");
+      sb.append(params.getDoNotCache());
+      sb.append(" ");
+    }
+    if (params.getInputsCount() > 0) {
+      sb.append("--inputs ");
+      for (String i : params.getInputsList()) {
+        sb.append(i);
+        sb.append(" ");
+      }
+    }
+    if (params.getOutputFilesCount() > 0) {
+      sb.append("--output_files ");
+      for (String i : params.getOutputFilesList()) {
+        sb.append(i);
+        sb.append(" ");
+      }
+    }
+    if (params.getOutputDirectoriesCount() > 0) {
+      sb.append("--output_directories ");
+      for (String i : params.getOutputDirectoriesList()) {
+        sb.append(i);
+        sb.append(" ");
+      }
+    }
+    if (params.getCommandCount() > 0) {
+      sb.append("--command ");
+      for (String i : params.getCommandList()) {
+        sb.append(i);
+        sb.append(" ");
+      }
+    }
+    if (params.getIgnoreInputsCount() > 0) {
+      sb.append("--ignore_inputs ");
+      for (String i : params.getIgnoreInputsList()) {
+        sb.append(i);
+        sb.append(" ");
+      }
+    }
+    if (params.getEnvironmentVariablesCount() > 0) {
+      sb.append("--environment_variables ");
+      for (Map.Entry<String, String> e  : params.getEnvironmentVariablesMap().entrySet()) {
+        sb.append(e.getKey());
+        sb.append("=");
+        sb.append(e.getValue());
+        sb.append(",");
+      }
+      sb.deleteCharAt(sb.length()-1);
+      sb.append(" ");
+    }
+    if (params.getPlatformCount() > 0) {
+      sb.append("--platform ");
+      for (Map.Entry<String, String> e  : params.getPlatformMap().entrySet()) {
+        sb.append(e.getKey());
+        sb.append("=");
+        sb.append(e.getValue());
+        sb.append(",");
+      }
+      sb.deleteCharAt(sb.length()-1);
+      sb.append(" ");
+    }
+    if (!params.getServerLogsPath().isEmpty()) {
+      sb.append("--server_logs_path ");
+      sb.append(params.getServerLogsPath());
+      sb.append(" ");
+    }
+    if (params.getExecutionTimeout() != 0) {
+      sb.append("--execution_timeout ");
+      sb.append(params.getExecutionTimeout());
+      sb.append(" ");
+    }
+    sb.deleteCharAt(sb.length()-1);
+    return sb.toString();
+  }
+
+  private static RunCommandParameters runRemoteCommandToProto(RunRemoteCommand options) {
+    return RunCommandParameters.newBuilder()
+        .setBuildRequestId(options.buildRequestId)
+        .setInvocationId(options.invocationId)
+        .setName(options.name)
+        .setAcceptCached(options.acceptCached)
+        .setDoNotCache(options.doNotCache)
+        .addAllInputs(options.inputs.stream().map(Path::toString).collect(Collectors.toList()))
+        .addAllOutputFiles(
+            options.outputFiles.stream().map(Path::toString).collect(Collectors.toList()))
+        .addAllOutputDirectories(
+            options.outputDirectories.stream().map(Path::toString).collect(Collectors.toList()))
+        .addAllCommand(options.command)
+        .addAllIgnoreInputs(options.ignoreInputs)
+        .putAllEnvironmentVariables(options.environmentVariables)
+        .putAllPlatform(options.platform)
+        .setServerLogsPath(options.serverLogsPath == null ? "" : options.serverLogsPath.toString())
+        .setExecutionTimeout(options.executionTimeout)
+        .build();
+  }
+
+  public RunRecord.Builder newFromCommandOptions(RunRemoteCommand options) {
+    if (Strings.isNullOrEmpty(options.buildRequestId)) {
+      options.buildRequestId = UUID.randomUUID().toString();
+    }
+    if (Strings.isNullOrEmpty(options.invocationId)) {
+      options.invocationId = UUID.randomUUID().toString();
+    }
+    if (Strings.isNullOrEmpty(options.name)) {
+      options.name = UUID.randomUUID().toString().substring(0, 8);
+    }
+    if (options.inputs == null) {
+      options.inputs = new ArrayList<>();
+    }
+    if (options.outputFiles == null) {
+      options.outputFiles = new ArrayList<>();
+    }
+    if (options.outputDirectories == null) {
+      options.outputDirectories = new ArrayList<>();
+    }
+    if (options.platform == null) {
+      options.platform = new HashMap<>();
+    }
+    if (options.environmentVariables == null) {
+      options.environmentVariables = new HashMap<>();
+    }
+    if (options.ignoreInputs == null) {
+      options.ignoreInputs = new ArrayList<>();
+    }
+    return RunRecord.newBuilder()
+        .setCommandParameters(runRemoteCommandToProto(options))
+        .setStage(Stage.QUEUED)
+        .setLocalTimestamps(
+            LocalTimestamps.newBuilder().setQueuedStart(Utils.getCurrentTimestamp(clock)));
+  }
+
+  public void runRemote(
+      RunRemoteCommand options, OutErr outErr, RunRecord.Builder record, String... args) {
+    if (Strings.isNullOrEmpty(clientOptions.proxy)) {
+      getRunner().runRemote(options, outErr, record);
+    } else {
+      record.setResult(runRemoteProxy(options, outErr, args));
+    }
+    RunResult result = record.getResult();
+    switch (result.getStatus()) {
+      case NON_ZERO_EXIT:
+        outErr.printErrLn("Remote action FAILED with exit code " + result.getExitCode());
+        break;
+      case TIMEOUT:
+        outErr.printErrLn(
+            "Remote action TIMED OUT after " + options.executionTimeout + " seconds.");
+        break;
+      case INTERRUPTED:
+        outErr.printErrLn("Remote execution was INTERRUPTED.");
+        break;
+      case REMOTE_ERROR:
+        outErr.printErrLn("Remote execution error: " + result.getMessage());
+        break;
+      case LOCAL_ERROR:
+        outErr.printErrLn("Local setup error: " + result.getMessage());
+        break;
+    }
+  }
+
+  private void doProxyPrintRemoteCommand(ProxyPrintRemoteCommand options) {
+    Preconditions.checkNotNull(proxyStub, "--proxy should be set");
+    FetchRecordResponse resp = proxyStub.fetchRecord(
+        FetchRecordRequest.newBuilder().setCommandId(options.commandId).build());
+    if (!resp.hasRecord()) {
+      System.out.println("Record with id " + options.commandId + " was not found.");
+      return;
+    }
+    System.out.println(runCommandParametersToString(resp.getRecord().getCommandParameters()));
+  }
+
+  private void doProxyStats(ProxyStatsCommand options) {
+    Preconditions.checkNotNull(proxyStub, "--proxy should be set");
+    StatsRequest.Builder req = StatsRequest.newBuilder()
+        .setFull(options.full)
+        .setInvocationId(options.invocationId)
+        .setStatus(options.status);
+    if (options.fromTs > 0) {
+      req.setFromTs(Timestamp.newBuilder().setSeconds(options.fromTs));
+    }
+    if (options.toTs > 0) {
+      req.setToTs(Timestamp.newBuilder().setSeconds(options.toTs));
+    }
+    Iterator<StatsResponse> replies = proxyStub.stats(req.build());
+    while (replies.hasNext()) {
+      System.out.println(replies.next().toString());
+    }
+  }
+
+  private void doRunRemote(RunRemoteCommand options, String... args) {
+    RunRecord.Builder record = newFromCommandOptions(options);
+    runRemote(options, OutErr.SYSTEM_OUT_ERR, record, args);
+    close();
+    System.exit(record.getResult().getExitCode());
+  }
+
+  // Shutdown remote service.
+  public void close() {
+    if (rpcLogFile != null) {
+      try {
+        rpcLogFile.close();
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
     }
   }
 
@@ -558,9 +990,13 @@ public class RemoteClient {
     CatCommand catCommand = new CatCommand();
     FailedActionsCommand failedActionsCommand = new FailedActionsCommand();
     ShowActionCommand showActionCommand = new ShowActionCommand();
+    ShowCommandCommand showCommandCommand = new ShowCommandCommand();
     ShowActionResultCommand showActionResultCommand = new ShowActionResultCommand();
     PrintLogCommand printLogCommand = new PrintLogCommand();
+    ProxyStatsCommand proxyStatsCommand = new ProxyStatsCommand();
+    ProxyPrintRemoteCommand proxyPrintRemoteCommand = new ProxyPrintRemoteCommand();
     RunCommand runCommand = new RunCommand();
+    RunRemoteCommand runRemoteCommand = new RunRemoteCommand();
 
     JCommander optionsParser =
         JCommander.newBuilder()
@@ -574,10 +1010,15 @@ public class RemoteClient {
             .addCommand("getoutdir", getOutDirCommand)
             .addCommand("cat", catCommand)
             .addCommand("show_action", showActionCommand, "sa")
+            .addCommand("show_command", showCommandCommand)
             .addCommand("show_action_result", showActionResultCommand, "sar")
             .addCommand("printlog", printLogCommand)
+            .addCommand("proxy_stats", proxyStatsCommand)
+            .addCommand("proxy_print_command", proxyPrintRemoteCommand)
             .addCommand("run", runCommand)
+            .addCommand("run_remote", runRemoteCommand)
             .addCommand("failed_actions", failedActionsCommand)
+            .addCommand("gen_many_inputs", proxyStatsCommand)  // tmp hack!!! remove
             .build();
 
     try {
@@ -599,40 +1040,52 @@ public class RemoteClient {
       System.exit(1);
     }
 
+    RemoteClient client = new RemoteClient(remoteOptions, remoteClientOptions, authAndTlsOptions);
     switch (optionsParser.getParsedCommand()) {
       case "printlog":
-        doPrintLog(remoteClientOptions.grpcLog, printLogCommand);
+        client.doPrintLog(printLogCommand);
         break;
       case "ls":
-        doLs(lsCommand, makeClientWithOptions(remoteOptions, authAndTlsOptions));
+        client.doLs(lsCommand);
         break;
       case "lsoutdir":
-        doLsOutDir(lsOutDirCommand, makeClientWithOptions(remoteOptions, authAndTlsOptions));
+        client.doLsOutDir(lsOutDirCommand);
         break;
       case "getdir":
-        doGetDir(getDirCommand, makeClientWithOptions(remoteOptions, authAndTlsOptions));
+        client.doGetDir(getDirCommand);
         break;
       case "getoutdir":
-        doGetOutDir(getOutDirCommand, makeClientWithOptions(remoteOptions, authAndTlsOptions));
+        client.doGetOutDir(getOutDirCommand);
         break;
       case "cat":
-        doCat(catCommand, makeClientWithOptions(remoteOptions, authAndTlsOptions));
+        client.doCat(catCommand);
         break;
       case "show_action":
-        doShowAction(showActionCommand, makeClientWithOptions(remoteOptions, authAndTlsOptions));
+        client.doShowAction(showActionCommand);
+        break;
+      case "show_command":
+        client.doShowCommand(showCommandCommand);
         break;
       case "show_action_result":
-        doShowActionResult(
-            showActionResultCommand, makeClientWithOptions(remoteOptions, authAndTlsOptions));
+        client.doShowActionResult(showActionResultCommand);
         break;
       case "run":
-        doRun(
-            remoteClientOptions.grpcLog,
-            runCommand,
-            makeClientWithOptions(remoteOptions, authAndTlsOptions));
+        client.doRun(runCommand);
+        break;
+      case "proxy_print_command":
+        client.doProxyPrintRemoteCommand(proxyPrintRemoteCommand);
+        break;
+      case "proxy_stats":
+        client.doProxyStats(proxyStatsCommand);
+        break;
+      case "run_remote":
+        client.doRunRemote(runRemoteCommand, args);
+        break;
+      case "gen_many_inputs":
+        client.doGenManyInputs();
         break;
       case "failed_actions":
-        doFailedActions(remoteClientOptions.grpcLog, failedActionsCommand);
+        client.doFailedActions(failedActionsCommand);
         break;
       default:
         throw new IllegalArgumentException("Unknown command.");

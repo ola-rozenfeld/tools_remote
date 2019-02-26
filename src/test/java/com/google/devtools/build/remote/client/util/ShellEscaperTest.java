@@ -11,10 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package com.google.devtools.build.remote.client;
+package com.google.devtools.build.remote.client.util;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.devtools.build.remote.client.ShellEscaper.escapeString;
+import static com.google.devtools.build.remote.client.util.ShellEscaper.escapeString;
 
 import java.util.Arrays;
 import org.junit.Test;

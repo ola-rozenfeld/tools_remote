@@ -14,4 +14,3 @@ java_grpc_library(
         "@googleapis//:google_longrunning_operations_java_proto",
     ],
 )
-

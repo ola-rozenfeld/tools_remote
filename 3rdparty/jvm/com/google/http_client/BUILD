@@ -20,7 +20,8 @@ java_library(
         "//external:jar/com/google/http_client/google_http_client_jackson2"
     ],
     runtime_deps = [
-        "//3rdparty/jvm/com/fasterxml/jackson/core:jackson_core"
+        "//3rdparty/jvm/com/fasterxml/jackson/core:jackson_core",
+        ":google_http_client"
     ],
     visibility = [
         "//visibility:public"

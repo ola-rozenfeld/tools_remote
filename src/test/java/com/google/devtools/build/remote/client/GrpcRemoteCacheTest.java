@@ -17,6 +17,7 @@ package com.google.devtools.build.remote.client;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import build.bazel.remote.execution.v2.ActionResult;
 import build.bazel.remote.execution.v2.ContentAddressableStorageGrpc.ContentAddressableStorageImplBase;
 import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.Directory;
@@ -25,7 +26,6 @@ import build.bazel.remote.execution.v2.FileNode;
 import build.bazel.remote.execution.v2.GetTreeRequest;
 import build.bazel.remote.execution.v2.GetTreeResponse;
 import build.bazel.remote.execution.v2.OutputDirectory;
-import build.bazel.remote.execution.v2.RequestMetadata;
 import build.bazel.remote.execution.v2.ToolDetails;
 import build.bazel.remote.execution.v2.Tree;
 import com.google.api.client.json.GenericJson;
@@ -38,6 +38,9 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.hash.Hashing;
 import com.google.common.jimfs.Configuration;
 import com.google.common.jimfs.Jimfs;
+import com.google.devtools.build.remote.client.util.DigestUtil;
+import com.google.devtools.build.remote.client.util.TracingMetadataUtils;
+import com.google.devtools.build.remote.client.util.Utils;
 import com.google.protobuf.ByteString;
 import io.grpc.CallCredentials;
 import io.grpc.CallOptions;
@@ -56,7 +59,7 @@ import java.io.IOException;
 import java.nio.file.FileSystem;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
+import java.util.concurrent.Executors;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -87,12 +90,7 @@ public class GrpcRemoteCacheTest {
             .start();
 
     execRoot = fs.getPath("/exec/root/");
-    RequestMetadata testMetadata =
-        RequestMetadata.newBuilder()
-            .setToolDetails(ToolDetails.newBuilder().setToolName("TEST"))
-            .build();
-    Context withEmptyMetaData = TracingMetadataUtils.contextWithMetadata(testMetadata);
-    withEmptyMetaData.attach();
+    TracingMetadataUtils.contextWithMetadata().attach();
   }
 
   @After
@@ -138,18 +136,25 @@ public class GrpcRemoteCacheTest {
             Files.newInputStream(credsPath), authTlsOptions.googleAuthScopes);
 
     RemoteOptions remoteOptions = new RemoteOptions();
-    return new GrpcRemoteCache(
-        ClientInterceptors.intercept(
-            InProcessChannelBuilder.forName(fakeServerName).directExecutor().build(),
-            ImmutableList.of(new CallCredentialsInterceptor(creds))),
-        creds,
-        remoteOptions,
-        DIGEST_UTIL);
-  }
-
-  // Returns whether a path/file is executable or not.
-  private boolean isExecutable(Path path) throws IOException {
-    return Files.getPosixFilePermissions(path).contains(PosixFilePermission.OWNER_EXECUTE);
+    RemoteRetrier retrier = RemoteRetrier.newExecRpcRetrier(remoteOptions.remoteRetry);
+    ReferenceCountedChannel channel =
+        new ReferenceCountedChannel(InProcessChannelBuilder.forName(fakeServerName).directExecutor()
+            .intercept(new CallCredentialsInterceptor(creds)).build());
+    ByteStreamUploader uploader =
+        new ByteStreamUploader.Builder()
+            .setInstanceName(remoteOptions.remoteInstanceName)
+            .setChannel(channel.retain())
+            .setCallCredentials(creds)
+            .setRetrier(retrier)
+            .build();
+    return new GrpcRemoteCache.Builder()
+        .setCallCredentials(creds)
+        .setChannel(channel.retain())
+        .setRemoteOptions(remoteOptions)
+        .setRetrier(retrier)
+        .setDigestUtil(DIGEST_UTIL)
+        .setUploader(uploader)
+        .build();
   }
 
   @Test
@@ -268,8 +273,8 @@ public class GrpcRemoteCacheTest {
     assertThat(Files.isDirectory(execRoot.resolve("test/bar"))).isTrue();
     assertThat(Files.isRegularFile(execRoot.resolve("test/bar/foo"))).isTrue();
     if (!System.getProperty("os.name").startsWith("Windows")) {
-      assertThat(isExecutable(execRoot.resolve("test/foo"))).isTrue();
-      assertThat(isExecutable(execRoot.resolve("test/bar/foo"))).isFalse();
+      assertThat(Utils.isExecutable(execRoot.resolve("test/foo"))).isTrue();
+      assertThat(Utils.isExecutable(execRoot.resolve("test/bar/foo"))).isFalse();
     }
   }
 
@@ -346,7 +351,7 @@ public class GrpcRemoteCacheTest {
     assertThat(Files.exists(execRoot.resolve("test/bar/qux"))).isTrue();
     assertThat(Files.isRegularFile(execRoot.resolve("test/bar/qux"))).isTrue();
     if (!System.getProperty("os.name").startsWith("Windows")) {
-      assertThat(isExecutable(execRoot.resolve("test/bar/qux"))).isTrue();
+      assertThat(Utils.isExecutable(execRoot.resolve("test/bar/qux"))).isTrue();
     }
   }
 
@@ -357,7 +362,7 @@ public class GrpcRemoteCacheTest {
     Tree barTreeMessage = Tree.newBuilder().setRoot(Directory.newBuilder()).build();
     Digest barTreeDigest = DIGEST_UTIL.compute(barTreeMessage);
     OutputDirectory barDirMessage =
-        OutputDirectory.newBuilder().setPath("test/bar").setTreeDigest(barTreeDigest).build();
+        OutputDirectory.newBuilder().setPath("ignored").setTreeDigest(barTreeDigest).build();
     Digest barDirDigest = DIGEST_UTIL.compute(barDirMessage);
     serviceRegistry.addService(
         new FakeImmutableCacheByteStreamImpl(
@@ -420,8 +425,124 @@ public class GrpcRemoteCacheTest {
     assertThat(Files.exists(execRoot.resolve("test/bar/qux"))).isTrue();
     assertThat(Files.isRegularFile(execRoot.resolve("test/bar/qux"))).isTrue();
     if (!System.getProperty("os.name").startsWith("Windows")) {
-      assertThat(isExecutable(execRoot.resolve("test/bar/wobble/qux"))).isFalse();
-      assertThat(isExecutable(execRoot.resolve("test/bar/qux"))).isFalse();
+      assertThat(Utils.isExecutable(execRoot.resolve("test/bar/wobble/qux"))).isFalse();
+      assertThat(Utils.isExecutable(execRoot.resolve("test/bar/qux"))).isFalse();
+    }
+  }
+
+  @Test
+  public void testDownloadAllResults() throws Exception {
+    GrpcRemoteCache client = newClient();
+    Digest fooDigest = DIGEST_UTIL.computeAsUtf8("foo-contents");
+    Digest barDigest = DIGEST_UTIL.computeAsUtf8("bar-contents");
+    Digest emptyDigest = DIGEST_UTIL.compute(new byte[0]);
+    serviceRegistry.addService(
+        new FakeImmutableCacheByteStreamImpl(fooDigest, "foo-contents", barDigest, "bar-contents"));
+
+    ActionResult.Builder result = ActionResult.newBuilder();
+    result.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
+    result.addOutputFilesBuilder().setPath("b/empty").setDigest(emptyDigest);
+    result.addOutputFilesBuilder().setPath("a/bar").setDigest(barDigest).setIsExecutable(true);
+    client.download(result.build(), execRoot, null);
+    assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/foo"))).isEqualTo(fooDigest);
+    assertThat(DIGEST_UTIL.compute(execRoot.resolve("b/empty"))).isEqualTo(emptyDigest);
+    assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/bar"))).isEqualTo(barDigest);
+    if (!System.getProperty("os.name").startsWith("Windows")) {
+      assertThat(Utils.isExecutable(execRoot.resolve("a/bar"))).isTrue();
+    }
+  }
+
+  @Test
+  public void testDownloadDirectoryResult() throws Exception {
+    GrpcRemoteCache client = newClient();
+    Digest fooDigest = DIGEST_UTIL.computeAsUtf8("foo-contents");
+    Digest quxDigest = DIGEST_UTIL.computeAsUtf8("qux-contents");
+    Tree barTreeMessage =
+        Tree.newBuilder()
+            .setRoot(
+                Directory.newBuilder()
+                    .addFiles(
+                        FileNode.newBuilder()
+                            .setName("qux")
+                            .setDigest(quxDigest)
+                            .setIsExecutable(true)))
+            .build();
+    Digest barTreeDigest = DIGEST_UTIL.compute(barTreeMessage);
+    serviceRegistry.addService(
+        new FakeImmutableCacheByteStreamImpl(
+            ImmutableMap.of(
+                fooDigest, "foo-contents",
+                barTreeDigest, barTreeMessage.toByteString(),
+                quxDigest, "qux-contents")));
+
+    ActionResult.Builder result = ActionResult.newBuilder();
+    result.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
+    result.addOutputDirectoriesBuilder().setPath("a/bar").setTreeDigest(barTreeDigest);
+    client.download(result.build(), execRoot, null);
+
+    assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/foo"))).isEqualTo(fooDigest);
+    assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/bar/qux"))).isEqualTo(quxDigest);
+    if (!System.getProperty("os.name").startsWith("Windows")) {
+      assertThat(Utils.isExecutable(execRoot.resolve("a/bar/qux"))).isTrue();
+    }
+  }
+
+  @Test
+  public void testDownloadDirectoryEmptyResult() throws Exception {
+    GrpcRemoteCache client = newClient();
+    Tree barTreeMessage = Tree.newBuilder().setRoot(Directory.newBuilder()).build();
+    Digest barTreeDigest = DIGEST_UTIL.compute(barTreeMessage);
+    serviceRegistry.addService(
+        new FakeImmutableCacheByteStreamImpl(
+            ImmutableMap.of(barTreeDigest, barTreeMessage.toByteString())));
+
+    ActionResult.Builder result = ActionResult.newBuilder();
+    result.addOutputDirectoriesBuilder().setPath("a/bar").setTreeDigest(barTreeDigest);
+    client.download(result.build(), execRoot, null);
+
+    assertThat(Files.isDirectory(execRoot.resolve("a/bar"))).isTrue();
+  }
+
+  @Test
+  public void testDownloadDirectoryNestedResult() throws Exception {
+    GrpcRemoteCache client = newClient();
+    Digest fooDigest = DIGEST_UTIL.computeAsUtf8("foo-contents");
+    Digest quxDigest = DIGEST_UTIL.computeAsUtf8("qux-contents");
+    Directory wobbleDirMessage =
+        Directory.newBuilder()
+            .addFiles(FileNode.newBuilder().setName("qux").setDigest(quxDigest))
+            .build();
+    Digest wobbleDirDigest = DIGEST_UTIL.compute(wobbleDirMessage);
+    Tree barTreeMessage =
+        Tree.newBuilder()
+            .setRoot(
+                Directory.newBuilder()
+                    .addFiles(
+                        FileNode.newBuilder()
+                            .setName("qux")
+                            .setDigest(quxDigest)
+                            .setIsExecutable(true))
+                    .addDirectories(
+                        DirectoryNode.newBuilder().setName("wobble").setDigest(wobbleDirDigest)))
+            .addChildren(wobbleDirMessage)
+            .build();
+    Digest barTreeDigest = DIGEST_UTIL.compute(barTreeMessage);
+    serviceRegistry.addService(
+        new FakeImmutableCacheByteStreamImpl(
+            ImmutableMap.of(
+                fooDigest, "foo-contents",
+                barTreeDigest, barTreeMessage.toByteString(),
+                quxDigest, "qux-contents")));
+
+    ActionResult.Builder result = ActionResult.newBuilder();
+    result.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
+    result.addOutputDirectoriesBuilder().setPath("a/bar").setTreeDigest(barTreeDigest);
+    client.download(result.build(), execRoot, null);
+
+    assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/foo"))).isEqualTo(fooDigest);
+    assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/bar/wobble/qux"))).isEqualTo(quxDigest);
+    if (!System.getProperty("os.name").startsWith("Windows")) {
+      assertThat(Utils.isExecutable(execRoot.resolve("a/bar/wobble/qux"))).isFalse();
     }
   }
 }
