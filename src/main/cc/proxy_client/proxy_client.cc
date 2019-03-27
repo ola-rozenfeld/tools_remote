@@ -27,6 +27,8 @@
 #include "src/main/proto/command_server.pb.h"
 #include "src/main/proto/include_processor.pb.h"
 
+#define INCLUDE_PROCESSOR_PROXY_FAILURE 44
+
 namespace remote_client {
 
 using devtools_goma::GomaIPC;
@@ -117,7 +119,7 @@ int GetInputsFromIncludeProcessorProxy(int argc, char** argv, const char** env,
   ProcessIncludesResponse resp;
   if (goma_ipc.Call("/ipc", &req, &resp, &status) < 0) {
     cerr << "Process includes failed: " << status.DebugString() << "\n";
-    return 44;
+    return INCLUDE_PROCESSOR_PROXY_FAILURE;
   }
   if (verbose) {
     cout << "Received process includes response:\n" << resp.DebugString() << "\n";
@@ -231,12 +233,14 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
   }
   if (*is_compile) {
     int proc_res = GetInputsFromIncludeProcessor(argc, argv, env, cwd, inputs);
-    if (proc_res != 0) {
+    // Ignore failures from include processor proxy failures since it fails deterministically on
+    // assembly commands today which we will eventually fix.
+    if (proc_res != 0 && proc_res != INCLUDE_PROCESSOR_PROXY_FAILURE) {
       return proc_res;
     }
     if (inputs->empty()) {
       // We successfully called the include processor, but it returned no values.
-      // Fall back on computing from the command, but warn:
+      // Fall back on computing from the command, but warn.
       cerr << cmd_id << "> Include processor did not return results, computing from args\n";
     }
   }
@@ -289,9 +293,10 @@ int CreateRunRequest(int argc, char** argv, const char** env,
     req->add_command(NormalizedRelativePath(cwd, output));
   }
   set<string> inputs;
-  if (ComputeInputs(argc, argv, env, cwd, cmd_id, is_compile, &inputs) != 0) {
+  int compute_input_res = ComputeInputs(argc, argv, env, cwd, cmd_id, is_compile, &inputs);
+  if (compute_input_res != 0) {
     cerr << cmd_id << "> Failed to compute inputs\n";
-    return 1;
+    return compute_input_res;
   }
   if (!inputs.empty()) {
     req->add_command("--inputs");
@@ -431,8 +436,9 @@ int ExecuteCommand(int argc, char** argv, const char** env) {
 
   RunRequest req;
   bool is_compile;
-  if (CreateRunRequest(argc, argv, env, cmd_id, &req, &is_compile) != 0) {
-    return 1;  // Failed to create request.
+  int create_run_res = CreateRunRequest(argc, argv, env, cmd_id, &req, &is_compile);
+  if (create_run_res != 0) {
+    return create_run_res;  // Failed to create request.
   }
   if (!is_compile && !getenv("RUN_ALL_REMOTELY")) {
     // Only run compile actions remotely for now.
