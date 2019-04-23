@@ -141,6 +141,26 @@ string GetCompilerDir(const char* compiler) {
   return compiler_dir;
 }
 
+int IncludeProcessorStats() {
+  const char* server_address = getenv("INCLUDE_SERVER_ADDRESS");
+  if (!server_address) {
+    server_address = "localhost:8070";
+  }
+  auto channel =
+      grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
+  std::unique_ptr<ProcessIncludesService::Stub> stub(ProcessIncludesService::NewStub(channel));
+  ClientContext context;  // No deadline.
+  include_processor::StatsRequest req;
+  include_processor::StatsResponse resp;
+  Status status = stub->Stats(&context, req, &resp);
+  if (!status.ok()) {
+    cout << "Stats rpc failed:" << status.error_message() << "\n";
+    return 1;
+  }
+  cout << resp.DebugString();
+  return 0;
+}
+
 int GetInputsFromIncludeProcessor(const string& cmd_id, int argc, char** argv, const char** env,
                                   const string& cwd, set<string>* inputs) {
   const char* server_address = getenv("INCLUDE_SERVER_ADDRESS");
@@ -164,6 +184,7 @@ int GetInputsFromIncludeProcessor(const string& cmd_id, int argc, char** argv, c
     server_address = absl::StrCat(parts[0], ":", port).c_str();
   }
   ProcessIncludesRequest req;
+  req.set_command_id(cmd_id);
   req.set_cwd(GetCwd());
   for (int i = 4; i < argc; ++i) {
     req.add_args(argv[i]);
@@ -615,6 +636,10 @@ int SelectAndRunCommand(int argc, char** argv, const char** env) {
 
   if (!strcmp(argv[1], "run")) {
     return ExecuteCommand(argc, argv, env);
+  }
+
+  if (!strcmp(argv[1], "include_stats")) {
+    return IncludeProcessorStats();
   }
 
   cerr << "Unrecognized command " << argv[1]

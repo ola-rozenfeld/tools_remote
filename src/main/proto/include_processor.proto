@@ -35,6 +35,9 @@ message ProcessIncludesRequest {
 
   // Environment variables in name=value format.
   repeated string envs = 3;
+
+  // An optional command identifier.
+  string command_id = 4;
 }
 
 message ProcessIncludesResponse {
@@ -42,7 +45,35 @@ message ProcessIncludesResponse {
   int32 time_msec = 2;
 }
 
+message Stat {
+  message Outlier {
+    string name = 1;
+    int64 value = 2;
+  }
+  double median = 1;
+  double percentile_75 = 2;
+  double percentile_85 = 3;
+  double percentile_95 = 4;
+  int64 total = 5;
+  repeated Outlier outliers = 6;
+}
+
+message StatsRequest {}
+
+message IncludeProcessorStats {
+  Stat total = 1;
+  int32 compiler_info_cache_misses = 2;
+  float compiler_info_cache_hit_ratio = 3;
+}
+
+message StatsResponse {
+  IncludeProcessorStats stats = 1;
+}
+
 service ProcessIncludesService {
   // Get dependencies of a command from a remote service.
   rpc ProcessIncludes (ProcessIncludesRequest) returns (ProcessIncludesResponse) {}
+
+  // Gets information about executed commands.
+  rpc Stats (StatsRequest) returns (StatsResponse) {}
 }
