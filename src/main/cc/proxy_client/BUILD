@@ -3,10 +3,14 @@ cc_library(
     srcs = [
         "proxy_client.cc",
         "javac_remote_actions.cc",
+        "link_command_inputs.cc",
+        "common_utils.cc",
     ],
     hdrs = [
         "proxy_client.h",
         "javac_remote_actions.h",
+        "link_command_inputs.h",
+        "common_utils.h",
     ],
     deps = [
         "//external:grpc++",
