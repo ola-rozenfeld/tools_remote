@@ -58,12 +58,12 @@ public class Stats {
       return values.size();
     }
 
-    public void add(String name, long value) {
+    public void add(String id, long value) {
       values.add(value);
       if (computeTotal) {
         total += value;
       }
-      Outlier cur = Outlier.newBuilder().setName(name).setValue(value).build();
+      Outlier cur = Outlier.newBuilder().setId(id).setValue(value).build();
       if (outlier1 == null || value > outlier1.getValue()) {
         outlier2 = outlier1;
         outlier1 = cur;
@@ -122,9 +122,9 @@ public class Stats {
 
   static class DurationStatistic extends Statistic {
     private final ArrayList<TimeInterval> intervals = new ArrayList<>();
-    public void add(String name, Timestamp from, Timestamp to) {
+    public void add(String id, Timestamp from, Timestamp to) {
       intervals.add(new TimeInterval(from, to));
-      add(name, Durations.toMillis(Timestamps.between(from, to)));
+      add(id, Durations.toMillis(Timestamps.between(from, to)));
     }
 
     private long computeParallelTimeMs() {
@@ -164,11 +164,11 @@ public class Stats {
     private final Statistic numOutputsStats = new Statistic();
     private final Statistic totalOutputBytesStats = new Statistic();
 
-    public void addDataPoint(String name, ActionMetadata meta) {
-      numInputsStats.add(name, meta.getNumInputs());
-      totalInputBytesStats.add(name, meta.getTotalInputBytes());
-      numOutputsStats.add(name, meta.getNumOutputs());
-      totalOutputBytesStats.add(name, meta.getTotalOutputBytes());
+    public void addDataPoint(String id, ActionMetadata meta) {
+      numInputsStats.add(id, meta.getNumInputs());
+      totalInputBytesStats.add(id, meta.getTotalInputBytes());
+      numOutputsStats.add(id, meta.getNumOutputs());
+      totalOutputBytesStats.add(id, meta.getTotalOutputBytes());
     }
 
     public long getCount() {
@@ -192,15 +192,15 @@ public class Stats {
     private final DurationStatistic executionStats = new DurationStatistic();
     private final DurationStatistic outputUploadStats = new DurationStatistic();
 
-    public void addDataPoint(String name, ExecutedActionMetadata meta) {
-      queuedStats.add(name, meta.getQueuedTimestamp(), meta.getWorkerStartTimestamp());
-      workerStats.add(name, meta.getWorkerStartTimestamp(), meta.getWorkerCompletedTimestamp());
+    public void addDataPoint(String id, ExecutedActionMetadata meta) {
+      queuedStats.add(id, meta.getQueuedTimestamp(), meta.getWorkerStartTimestamp());
+      workerStats.add(id, meta.getWorkerStartTimestamp(), meta.getWorkerCompletedTimestamp());
       inputFetchStats.add(
-          name, meta.getInputFetchStartTimestamp(), meta.getInputFetchCompletedTimestamp());
+          id, meta.getInputFetchStartTimestamp(), meta.getInputFetchCompletedTimestamp());
       executionStats.add(
-          name, meta.getExecutionStartTimestamp(), meta.getExecutionCompletedTimestamp());
+          id, meta.getExecutionStartTimestamp(), meta.getExecutionCompletedTimestamp());
       outputUploadStats.add(
-          name, meta.getOutputUploadStartTimestamp(), meta.getOutputUploadCompletedTimestamp());
+          id, meta.getOutputUploadStartTimestamp(), meta.getOutputUploadCompletedTimestamp());
     }
 
     public long getCount() {
@@ -227,23 +227,23 @@ public class Stats {
     private final DurationStatistic downloadOutputsStats = new DurationStatistic();
     private final DurationStatistic totalLocalStats = new DurationStatistic();
 
-    public void addDataPoint(String name, LocalTimestamps ts) {
+    public void addDataPoint(String id, LocalTimestamps ts) {
       if (ts.hasQueuedEnd()) {
-        queuedStats.add(name, ts.getQueuedStart(), ts.getQueuedEnd());
+        queuedStats.add(id, ts.getQueuedStart(), ts.getQueuedEnd());
       }
       if (ts.hasInputTreeEnd()) {
-        inputTreeStats.add(name, ts.getInputTreeStart(), ts.getInputTreeEnd());
+        inputTreeStats.add(id, ts.getInputTreeStart(), ts.getInputTreeEnd());
       }
-      checkActionCacheStats.add(name, ts.getCheckActionCacheStart(), ts.getCheckActionCacheEnd());
+      checkActionCacheStats.add(id, ts.getCheckActionCacheStart(), ts.getCheckActionCacheEnd());
       if (ts.hasUploadInputsEnd()) {
-        uploadInputsStats.add(name, ts.getUploadInputsStart(), ts.getUploadInputsEnd());
+        uploadInputsStats.add(id, ts.getUploadInputsStart(), ts.getUploadInputsEnd());
       }
       if (ts.hasExecuteEnd()) {
-        executeStats.add(name, ts.getExecuteStart(), ts.getExecuteEnd());
+        executeStats.add(id, ts.getExecuteStart(), ts.getExecuteEnd());
       }
       if (ts.hasDownloadOutputsEnd()) {
-        downloadOutputsStats.add(name, ts.getDownloadOutputsStart(), ts.getDownloadOutputsEnd());
-        totalLocalStats.add(name, ts.getQueuedStart(), ts.getDownloadOutputsEnd());
+        downloadOutputsStats.add(id, ts.getDownloadOutputsStart(), ts.getDownloadOutputsEnd());
+        totalLocalStats.add(id, ts.getQueuedStart(), ts.getDownloadOutputsEnd());
       }
     }
 
@@ -267,6 +267,10 @@ public class Stats {
   public static boolean shouldCountRecord(RunRecord.Builder rec, StatsRequest req) {
     if (!req.getInvocationId().isEmpty() &&
         !req.getInvocationId().equals(rec.getCommandParameters().getInvocationId())) {
+      return false;
+    }
+    if (!req.getCommandId().isEmpty() &&
+        !req.getCommandId().equals(rec.getCommandParameters().getId())) {
       return false;
     }
     LocalTimestamps ts = rec.getLocalTimestamps();
@@ -307,13 +311,13 @@ public class Stats {
       if (stage.getNumber() >= stage.UPLOADING_INPUTS.getNumber()) { // Stages are in order.
         afterAcCall++;
       }
-      String name = rec.getCommandParameters().getName();
+      String id = rec.getCommandParameters().getId();
       if (rec.hasResult() && rec.getResult().hasMetadata()) {
-        remoteStats.addDataPoint(name, rec.getResult().getMetadata());
+        remoteStats.addDataPoint(id, rec.getResult().getMetadata());
       }
       if (rec.hasLocalTimestamps()) {
         LocalTimestamps ts = rec.getLocalTimestamps();
-        localStats.addDataPoint(name, ts);
+        localStats.addDataPoint(id, ts);
         if (startTs == null ||
             (ts.hasQueuedStart() && Timestamps.compare(startTs, ts.getQueuedStart()) > 0)) {
           startTs = ts.getQueuedStart();
@@ -330,7 +334,7 @@ public class Stats {
       ActionMetadata meta = rec.getActionMetadata();  // It always exists at this point.
       numInputs += meta.getNumInputs();
       proxyStats.setCasCacheMisses(proxyStats.getCasCacheMisses() + meta.getCasCacheMisses());
-      actionStats.addDataPoint(name, meta);
+      actionStats.addDataPoint(id, meta);
       finishedByStatus[rec.getResult().getStatus().getNumber()]++;
     }
     if (numInputs > 0) {

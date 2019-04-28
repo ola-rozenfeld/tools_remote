@@ -71,5 +71,7 @@ public final class RemoteProxyServer {
         proxyOptions.listenPort);
     server.start();
     server.awaitTermination();
+    // TODO(olaola): shutdown gracefully in order to reach this statement.
+    client.close();
   }
 }

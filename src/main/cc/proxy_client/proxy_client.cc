@@ -452,17 +452,11 @@ int CreateRunRequest(int argc, char** argv, const char** env,
                      const string& cmd_id, RunRequest* req,
                      bool* is_compile, bool* is_javac) {
   req->Clear();
-  req->add_command("run_remote");
-  req->add_command("--name");
-  req->add_command(cmd_id);
-  if (FLAGS_invocation_id != "") {
-    req->add_command("--invocation_id");
-    req->add_command(FLAGS_invocation_id);
-  }
-  req->add_command("--accept_cached");
-  req->add_command(FLAGS_accept_cached ? "true" : "false");
-  req->add_command("--save_execution_data");
-  req->add_command(FLAGS_save_exec_data ? "true" : "false");
+  RunCommandParameters* params = req->mutable_command();
+  params->set_id(cmd_id);
+  params->set_invocation_id(FLAGS_invocation_id);
+  params->set_accept_cached(FLAGS_accept_cached);
+  params->set_save_execution_data(FLAGS_save_exec_data);
   string cwd = GetCwd();
   set<string> outputs;
   if (FLAGS_outputs == "") {
@@ -476,19 +470,14 @@ int CreateRunRequest(int argc, char** argv, const char** env,
       outputs.insert(absl::StrCat(output.substr(0, output.length() - 2), ".d"));
     }
   }
-  req->add_command("--output_files");  // We don't know whether these are files or directories.
   for (const auto& output : outputs) {
-    req->add_command(NormalizedRelativePath(cwd, output));
+    params->add_output_files(NormalizedRelativePath(cwd, output));
   }
   set<string> inputs;
   int compute_input_res = ComputeInputs(argc, argv, env, cwd, cmd_id, is_compile, is_javac, &inputs);
   if (compute_input_res != 0) {
     cerr << cmd_id << "> Failed to compute inputs\n";
     return compute_input_res;
-  }
-
-  if (!inputs.empty()) {
-    req->add_command("--inputs");
   }
   bool allow_outputs_under_inputs = *is_javac || FLAGS_allow_out_under_in;
   bool allow_output_directories_as_inputs = *is_javac || FLAGS_allow_out_dirs;
@@ -514,38 +503,30 @@ int CreateRunRequest(int argc, char** argv, const char** env,
         continue;
       }
     }
-    req->add_command(inp);
+    params->add_inputs(inp);
   }
-
-  req->add_command("--command");
   for (int i = 0; i < argc; ++i) {
-    req->add_command(NormalizedRelativePath(cwd, string(argv[i])));
+    params->add_command(NormalizedRelativePath(cwd, string(argv[i])));
   }
-  req->add_command("--ignore_inputs");
-  req->add_command("\\.d$");
-  req->add_command("\\.P$");
-  req->add_command("\\.o-.*$");
-  req->add_command("\\.git.*$");
-  req->add_command("--environment_variables");
-  string env_vars = "PWD=" + kPWDOverride + ",";
+  params->add_ignore_inputs("\\.d$");
+  params->add_ignore_inputs("\\.P$");
+  params->add_ignore_inputs("\\.o-.*$");
+  params->add_ignore_inputs("\\.git.*$");
+  auto& environment_variables = *(params->mutable_environment_variables());
+  environment_variables["PWD"] = kPWDOverride;
   set<string> whitelist = absl::StrSplit(FLAGS_env_whitelist, ',', absl::SkipEmpty());
   while (*env) {
     string varval(*env++);
     unsigned int eq_index = varval.find("=");
     string var = varval.substr(0, eq_index);
     if (whitelist.find(var) != whitelist.end()) {
-      absl::StrAppend(&env_vars, varval, ",");
+      environment_variables[var] = varval.substr(eq_index+1);
     }
   }
-  if (env_vars.length() > 1) {
-    req->add_command(env_vars.substr(0, env_vars.length() - 1));
-  }
-  req->add_command("--platform");
-  req->add_command(
-      "container-image=docker://gcr.io/foundry-x-experiments/"
-      "android-platform@sha256:"
-      "56e8072003914010c86702ef94634cdfde7089e4732ceac241d0fe4242957f90,"
-      "jdk-version=10");
+  auto& platform = *(params->mutable_platform());
+  platform["container-image"] = "docker://gcr.io/foundry-x-experiments/android-platform@sha256:"
+      "56e8072003914010c86702ef94634cdfde7089e4732ceac241d0fe4242957f90";
+  platform["jdk-version"] = "10";
   return 0;
 }
 

@@ -29,6 +29,7 @@ import com.google.devtools.build.remote.client.util.DigestUtil;
 import java.io.File;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -273,9 +274,9 @@ public final class RemoteClientOptions {
     public String toolName = "";
 
     @Parameter(
-        names = "--name",
+        names = "--id",
         description = "An optional identifier of this command.")
-    public String name = "";
+    public String id = "";
 
     @Parameter(
         names = "--accept_cached",
@@ -292,51 +293,48 @@ public final class RemoteClientOptions {
     @Parameter(
         names = "--inputs",
         variableArity = true,
-        converter = PathConverter.class,
         description = "Input paths (files or directories) relative to exec root to include for "+
             "command execution.")
-    public List<Path> inputs = null;
+    public List<String> inputs = new ArrayList<>();
 
     @Parameter(
         names = "--output_files",
         variableArity = true,
-        converter = PathConverter.class,
         description = "Output files relative to exec root to download after command executes.")
-    public List<Path> outputFiles = null;
+    public List<String> outputFiles = new ArrayList<>();
 
     @Parameter(
         names = "--output_directories",
         variableArity = true,
-        converter = PathConverter.class,
-        description = "Output files relative to exec root to download after command executes.")
-    public List<Path> outputDirectories = null;
+        description = "Output directories relative to exec root to download after execution.")
+    public List<String> outputDirectories = new ArrayList<>();
 
     @Parameter(
         names = "--command",
         variableArity = true,
         splitter = NoSplittingSplitter.class,
         description = "Command line elements to execute.")
-    public List<String> command = null;
+    public List<String> command = new ArrayList<>();
 
     @Parameter(
         names = "--ignore_inputs",
         variableArity = true,
         description = "Inputs to ignore, as regular expressions.")
-    public List<String> ignoreInputs = null;
+    public List<String> ignoreInputs = new ArrayList<>();
 
     @Parameter(
         names = "--environment_variables",
         converter = MapConverter.class,
         description = "Environment variables to pass through to remote execution, formatted as a " +
             "comma-separated list of <variable_name>=value pairs.")
-    public Map<String,String> environmentVariables = null;
+    public Map<String,String> environmentVariables = new HashMap<>();
 
     @Parameter(
         names = "--platform",
         converter = MapConverter.class,
         description = "The platform to use for the remote execution, formatted as a " +
             "comma-separated list of <property_name>=value pairs.")
-    public Map<String,String> platform = null;
+    public Map<String,String> platform = new HashMap<>();
 
     @Parameter(
         names = "--working_directory",
@@ -347,9 +345,8 @@ public final class RemoteClientOptions {
 
     @Parameter(
         names = "--server_logs_path",
-        converter = PathConverter.class,
         description = "Optional path to save server logs for failed actions.")
-    public Path serverLogsPath = null;
+    public String serverLogsPath = "";
 
     @Parameter(
         names = "--execution_timeout",
@@ -383,6 +380,11 @@ public final class RemoteClientOptions {
         names = "--invocation_id",
         description = "A particular invocation id to get the stats for.")
     public String invocationId = "";
+
+    @Parameter(
+        names = {"--command_id", "-c"},
+        description = "A particular command to get the stats for.")
+    public String commandId = "";
 
     @Parameter(
         names = "--from_ts",
@@ -428,13 +430,6 @@ public final class RemoteClientOptions {
         description = "If specified, the command will be parsed from a text file containing " +
             "the output of a full --proxy_stats command.")
     public File proxyStatsFile = null;
-
-    @Parameter(
-        names = {"--full"},
-        arity=1,
-        description = "If set, will also print out the full digests of the entire input tree and " +
-          "command and action protos, enabling to debug any differences / cache misses.")
-    public boolean full;
   }
 
   public static final class StatusConverter extends EnumConverter<Status> {

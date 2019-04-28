@@ -36,8 +36,6 @@ import com.google.common.hash.Hashing;
 import com.google.common.io.Files;
 import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc;
 import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc.CommandServiceBlockingStub;
-import com.google.devtools.build.lib.remote.proxy.FetchRecordRequest;
-import com.google.devtools.build.lib.remote.proxy.FetchRecordResponse;
 import com.google.devtools.build.lib.remote.proxy.LocalTimestamps;
 import com.google.devtools.build.lib.remote.proxy.RunCommandParameters;
 import com.google.devtools.build.lib.remote.proxy.RunRecord;
@@ -143,7 +141,8 @@ public class RemoteClient {
       return;
     }
     List<ClientInterceptor> interceptors = new ArrayList<>();
-    if (!Strings.isNullOrEmpty(clientOptions.grpcLog)) {
+    if (!Strings.isNullOrEmpty(clientOptions.grpcLog) &&
+        Strings.isNullOrEmpty(clientOptions.proxy)) {
       rpcLogFile = new AsynchronousFileOutputStream(clientOptions.grpcLog);
       interceptors.add(new LoggingInterceptor(rpcLogFile, clock));
     }
@@ -688,7 +687,7 @@ public class RemoteClient {
     }
   }
 
-  private RunResult runRemoteProxy(RunRemoteCommand options, OutErr outErr, String... args) {
+  private void runRemoteProxy(RunRecord.Builder record, OutErr outErr) {
     Preconditions.checkNotNull(proxyStubs, "--proxy should be set");
     int proxyInstance = rand.nextInt(proxyStubs.size());
     Utils.vlog(
@@ -699,7 +698,7 @@ public class RemoteClient {
     Iterator<RunResponse> replies =
         proxyStubs
             .get(proxyInstance)
-            .run(RunRequest.newBuilder().addAllCommand(Arrays.asList(args)).build());
+            .run(RunRequest.newBuilder().setCommand(record.getCommandParameters()).build());
     RunResult result = null;
     while (replies.hasNext()) {
       RunResponse resp = replies.next();
@@ -714,13 +713,13 @@ public class RemoteClient {
       }
     } // Always read the entire stream.
     if (result == null) {
-      return RunResult.newBuilder()
+      result = RunResult.newBuilder()
           .setStatus(RunResult.Status.REMOTE_ERROR)
           .setExitCode(RemoteRunner.REMOTE_ERROR_EXIT_CODE)
           .setMessage("Remote client proxy failed to return a run result.")
           .build();
     }
-    return result;
+    record.setResult(result);
   }
 
   private static String runCommandParametersToString(RunCommandParameters params) {
@@ -736,9 +735,9 @@ public class RemoteClient {
       sb.append(params.getInvocationId());
       sb.append(" ");
     }
-    if (!params.getName().isEmpty()) {
-      sb.append("--name ");
-      sb.append(params.getName());
+    if (!params.getId().isEmpty()) {
+      sb.append("--id ");
+      sb.append(params.getId());
       sb.append(" ");
     }
     if (params.getAcceptCached()) {
@@ -818,73 +817,63 @@ public class RemoteClient {
       sb.append(params.getExecutionTimeout());
       sb.append(" ");
     }
+    if (params.getSaveExecutionData()) {
+      sb.append("--save_execution_data true ");
+    }
+    if (params.getLocalFallback()) {
+      sb.append("--local_fallback true ");
+    }
     sb.deleteCharAt(sb.length() - 1);
     return sb.toString();
   }
 
-  private static RunCommandParameters runRemoteCommandToProto(RunRemoteCommand options) {
-    return RunCommandParameters.newBuilder()
-        .setBuildRequestId(options.buildRequestId)
-        .setInvocationId(options.invocationId)
-        .setName(options.name)
-        .setWorkingDirectory(options.workingDirectory)
-        .setAcceptCached(options.acceptCached)
-        .setDoNotCache(options.doNotCache)
-        .addAllInputs(options.inputs.stream().map(Path::toString).collect(Collectors.toList()))
-        .addAllOutputFiles(
-            options.outputFiles.stream().map(Path::toString).collect(Collectors.toList()))
-        .addAllOutputDirectories(
-            options.outputDirectories.stream().map(Path::toString).collect(Collectors.toList()))
-        .addAllCommand(options.command)
-        .addAllIgnoreInputs(options.ignoreInputs)
-        .putAllEnvironmentVariables(options.environmentVariables)
-        .putAllPlatform(options.platform)
-        .setServerLogsPath(options.serverLogsPath == null ? "" : options.serverLogsPath.toString())
-        .setExecutionTimeout(options.executionTimeout)
-        .build();
-  }
-
-  public RunRecord.Builder newFromCommandOptions(RunRemoteCommand options) {
-    if (Strings.isNullOrEmpty(options.buildRequestId)) {
-      options.buildRequestId = UUID.randomUUID().toString();
+  public RunRecord.Builder newFromCommandParameters(RunCommandParameters params) {
+    RunCommandParameters.Builder paramsWithIds = params.toBuilder();
+    if (paramsWithIds.getInvocationId().isEmpty()) {
+      paramsWithIds.setInvocationId(UUID.randomUUID().toString());
     }
-    if (Strings.isNullOrEmpty(options.invocationId)) {
-      options.invocationId = UUID.randomUUID().toString();
+    if (paramsWithIds.getBuildRequestId().isEmpty()) {
+      paramsWithIds.setBuildRequestId(UUID.randomUUID().toString());
     }
-    if (Strings.isNullOrEmpty(options.name)) {
-      options.name = UUID.randomUUID().toString().substring(0, 8);
-    }
-    if (options.inputs == null) {
-      options.inputs = new ArrayList<>();
-    }
-    if (options.outputFiles == null) {
-      options.outputFiles = new ArrayList<>();
-    }
-    if (options.outputDirectories == null) {
-      options.outputDirectories = new ArrayList<>();
-    }
-    if (options.platform == null) {
-      options.platform = new HashMap<>();
-    }
-    if (options.environmentVariables == null) {
-      options.environmentVariables = new HashMap<>();
-    }
-    if (options.ignoreInputs == null) {
-      options.ignoreInputs = new ArrayList<>();
+    if (paramsWithIds.getId().isEmpty()) {
+      // TODO(olaola): switch to a stable command id.
+      paramsWithIds.setId(UUID.randomUUID().toString().substring(0, 8));
     }
     return RunRecord.newBuilder()
-        .setCommandParameters(runRemoteCommandToProto(options))
+        .setCommandParameters(paramsWithIds)
         .setStage(Stage.QUEUED)
         .setLocalTimestamps(
             LocalTimestamps.newBuilder().setQueuedStart(Utils.getCurrentTimestamp(clock)));
   }
 
-  public void runRemote(
-      RunRemoteCommand options, OutErr outErr, RunRecord.Builder record, String... args) {
+  public RunRecord.Builder newFromCommandOptions(RunRemoteCommand options) {
+    return newFromCommandParameters(RunCommandParameters.newBuilder()
+        .setBuildRequestId(options.buildRequestId)
+        .setInvocationId(options.invocationId)
+        .setId(options.id)
+        .setWorkingDirectory(options.workingDirectory)
+        .setToolName(options.toolName)
+        .setAcceptCached(options.acceptCached)
+        .setDoNotCache(options.doNotCache)
+        .addAllInputs(options.inputs)
+        .addAllOutputFiles(options.outputFiles)
+        .addAllOutputDirectories(options.outputDirectories)
+        .addAllCommand(options.command)
+        .addAllIgnoreInputs(options.ignoreInputs)
+        .putAllEnvironmentVariables(options.environmentVariables)
+        .putAllPlatform(options.platform)
+        .setServerLogsPath(options.serverLogsPath)
+        .setExecutionTimeout(options.executionTimeout)
+        .setSaveExecutionData(options.saveExecutionData)
+        .setLocalFallback(options.localFallback)
+        .build());
+  }
+
+  public void runRemote(RunRecord.Builder record, OutErr outErr) {
     if (Strings.isNullOrEmpty(clientOptions.proxy)) {
-      getRunner().runRemote(options, outErr, record);
+      getRunner().runRemote(record, outErr);
     } else {
-      record.setResult(runRemoteProxy(options, outErr, args));
+      runRemoteProxy(record, outErr);
     }
     RunResult result = record.getResult();
     switch (result.getStatus()) {
@@ -892,8 +881,8 @@ public class RemoteClient {
         outErr.printErrLn("Remote action FAILED with exit code " + result.getExitCode());
         break;
       case TIMEOUT:
-        outErr.printErrLn(
-            "Remote action TIMED OUT after " + options.executionTimeout + " seconds.");
+        int timeout = record.getCommandParameters().getExecutionTimeout();
+        outErr.printErrLn("Remote action TIMED OUT after " + timeout + " seconds.");
         break;
       case INTERRUPTED:
         outErr.printErrLn("Remote execution was INTERRUPTED.");
@@ -907,14 +896,14 @@ public class RemoteClient {
     }
   }
 
-  private void printRecord(RunRecord record, ProxyPrintRemoteCommand options) {
-    System.out.println(runCommandParametersToString(record.getCommandParameters()));
-    if (options.full && record.hasExecutionData()) {
-      System.out.println(record.getExecutionData());
-    }
-  }
-
-  private void doProxyPrintRemoteCommand(ProxyPrintRemoteCommand options) throws IOException {
+  private RunCommandParameters findRemoteCommand(ProxyPrintRemoteCommand options)
+      throws IOException {
+    StatsRequest req =
+        StatsRequest.newBuilder()
+            .setFull(true)
+            .setInvocationId(options.invocationId)
+            .setCommandId(options.commandId)
+            .build();
     if (options.proxyStatsFile != null) {
       StatsResponse.Builder builder = StatsResponse.newBuilder();
       try (FileInputStream fin = new FileInputStream(options.proxyStatsFile)) {
@@ -922,29 +911,29 @@ public class RemoteClient {
       }
       StatsResponse resp = builder.build();
       for (RunRecord record : resp.getRunRecordsList()) {
-        if (record.getCommandParameters().getName().equals(options.commandId) &&
-            (Strings.isNullOrEmpty(options.invocationId) ||
-                record.getCommandParameters().getInvocationId().equals(options.invocationId))) {
-          printRecord(record, options);
-          return; // Print the first one that matched.
+        if (Stats.shouldCountRecord(record.toBuilder(), req)) {
+          return record.getCommandParameters(); // Return the first one that matched.
         }
       }
     }
     Preconditions.checkNotNull(proxyStubs, "--proxy should be set");
     for (CommandServiceBlockingStub proxyStub : proxyStubs) {
-      FetchRecordResponse resp =
-          proxyStub.fetchRecord(
-              FetchRecordRequest.newBuilder()
-                  .setCommandId(options.commandId)
-                  .setInvocationId(options.invocationId)
-                  .build());
-      if (!resp.hasRecord()) {
-        continue;
+      Iterator<StatsResponse> replies = proxyStub.stats(req);
+      if (replies.hasNext()) {
+        StatsResponse resp = replies.next();
+        if (resp.getRunRecordsCount() > 0) {
+          return resp.getRunRecords(0).getCommandParameters(); // Return the first one that matched.
+        }
       }
-      printRecord(resp.getRecord(), options);
-      return; // Print the first one that matched.
     }
-    System.out.println("Record with id " + options.commandId + " was not found.");
+    return null;
+  }
+
+  private void doProxyPrintRemoteCommand(ProxyPrintRemoteCommand options) throws IOException {
+    RunCommandParameters params = findRemoteCommand(options);
+    System.out.println(params == null ?
+        "Record with id " + options.commandId + " was not found." :
+        runCommandParametersToString(params));
   }
 
   private void doProxyStats(ProxyStatsCommand options) throws IOException {
@@ -952,6 +941,7 @@ public class RemoteClient {
         StatsRequest.newBuilder()
             .setFull(options.full || proxyStubs.size() > 1)
             .setInvocationId(options.invocationId)
+            .setCommandId(options.commandId)
             .setStatus(options.status)
             .setSummary(proxyStubs.size() == 1);
     if (options.fromTs > 0) {
@@ -969,7 +959,7 @@ public class RemoteClient {
       List<RunRecord.Builder> records = builder.build().getRunRecordsList().stream()
           .map(RunRecord::toBuilder)
           .sorted((r1, r2) ->
-              r1.getCommandParameters().getName().compareTo(r2.getCommandParameters().getName()))
+              r1.getCommandParameters().getId().compareTo(r2.getCommandParameters().getId()))
           .collect(Collectors.toList());
       aggr.setProxyStats(Stats.computeStats(req.build(), records));
       if (options.full) {
@@ -996,7 +986,7 @@ public class RemoteClient {
     }
     if (options.full) {
       records.sort((r1, r2) ->
-          r1.getCommandParameters().getName().compareTo(r2.getCommandParameters().getName()));
+          r1.getCommandParameters().getId().compareTo(r2.getCommandParameters().getId()));
       aggr.addAllRunRecords(
           records.stream().map(RunRecord.Builder::build).collect(Collectors.toList()));
     }
@@ -1006,9 +996,9 @@ public class RemoteClient {
     System.out.println(aggr.toString());
   }
 
-  private void doRunRemote(RunRemoteCommand options, String... args) {
+  private void doRunRemote(RunRemoteCommand options) {
     RunRecord.Builder record = newFromCommandOptions(options);
-    runRemote(options, OutErr.SYSTEM_OUT_ERR, record, args);
+    runRemote(record, OutErr.SYSTEM_OUT_ERR);
     close();
     System.exit(record.getResult().getExitCode());
   }
@@ -1136,7 +1126,7 @@ public class RemoteClient {
         client.doProxyStats(proxyStatsCommand);
         break;
       case "run_remote":
-        client.doRunRemote(runRemoteCommand, args);
+        client.doRunRemote(runRemoteCommand);
         break;
       case "failed_actions":
         client.doFailedActions(failedActionsCommand);

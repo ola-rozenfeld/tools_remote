@@ -14,15 +14,11 @@
 
 package com.google.devtools.build.remote.client.proxy;
 
-import com.beust.jcommander.JCommander;
-import com.beust.jcommander.ParameterException;
 import com.google.common.collect.Queues;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.google.devtools.build.lib.remote.proxy.FetchRecordRequest;
-import com.google.devtools.build.lib.remote.proxy.FetchRecordResponse;
 import com.google.devtools.build.lib.remote.proxy.RunRecord;
 import com.google.devtools.build.lib.remote.proxy.RunRequest;
 import com.google.devtools.build.lib.remote.proxy.RunResponse;
@@ -34,7 +30,6 @@ import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc.CommandServ
 import com.google.devtools.build.remote.client.AuthAndTLSOptions;
 import com.google.devtools.build.remote.client.RecordingOutErr;
 import com.google.devtools.build.remote.client.RemoteClient;
-import com.google.devtools.build.remote.client.RemoteClientOptions.RunRemoteCommand;
 import com.google.devtools.build.remote.client.RemoteOptions;
 import com.google.devtools.build.remote.client.RemoteClientOptions;
 import com.google.devtools.build.remote.client.RemoteRunner;
@@ -93,39 +88,13 @@ final class CommandServer extends CommandServiceImplBase {
 
   @Override
   public void run(RunRequest req, StreamObserver<RunResponse> responseObserver) {
-    Utils.vlog(client.verbosity(),3,"Received request:\n%s", req);
-    RunRemoteCommand cmdOptions = new RunRemoteCommand();
-    JCommander optionsParser =
-        JCommander.newBuilder()
-            .programName("remote_client")
-            .addObject(new AuthAndTLSOptions()) // Parse, but ignore.
-            .addObject(new RemoteOptions())
-            .addObject(new RemoteClientOptions())
-            .addCommand("run_remote", cmdOptions)
-            .build();
-    optionsParser.setExpandAtSign(false);
-    try {
-      optionsParser.parse(req.getCommandList().toArray(new String[]{}));
-    } catch (ParameterException e) {
-      System.err.println("Unable to parse options: " + e.getLocalizedMessage());
-      responseObserver.onNext(
-          RunResponse.newBuilder()
-              .setResult(
-                  RunResult.newBuilder()
-                      .setStatus(Status.LOCAL_ERROR)
-                      .setExitCode(RemoteRunner.LOCAL_ERROR_EXIT_CODE)
-                      .setMessage("Unable to parse options: " + e.getLocalizedMessage()))
-              .build());
-      responseObserver.onCompleted();
-      return;
-    }
-
+    Utils.vlog(client.verbosity(), 3, "Received request:\n%s", req);
     RecordingOutErr outErr = new RecordingOutErr();
-    RunRecord.Builder record = client.newFromCommandOptions(cmdOptions);
+    RunRecord.Builder record = client.newFromCommandParameters(req.getCommand());
     addRecord(record);
     ListenableFuture<Void> future =
         executorService.submit(() -> {
-          client.runRemote(cmdOptions, outErr, record, new String[]{});
+          client.runRemote(record, outErr);
           return null;
         });
     future.addListener(
@@ -145,7 +114,7 @@ final class CommandServer extends CommandServiceImplBase {
                   client.verbosity(),
                   1,
                   "%s> Command failed: status %s, exit code %d, message %s",
-                  record.getCommandParameters().getName(),
+                  record.getCommandParameters().getId(),
                   status,
                   record.getResult().getExitCode(),
                   record.getResult().getMessage());
@@ -188,22 +157,6 @@ final class CommandServer extends CommandServiceImplBase {
     } else {
       responseObserver.onNext(response.build());
     }
-    responseObserver.onCompleted();
-  }
-
-  @Override
-  public void fetchRecord(
-      FetchRecordRequest req, StreamObserver<FetchRecordResponse> responseObserver) {
-    for (RunRecord.Builder rec : records) {
-      if (rec.getCommandParameters().getName().equals(req.getCommandId()) &&
-          (req.getInvocationId().isEmpty() ||
-              rec.getCommandParameters().getInvocationId().equals(req.getInvocationId()))) {
-        responseObserver.onNext(FetchRecordResponse.newBuilder().setRecord(rec).build());
-        responseObserver.onCompleted();
-        return;
-      }
-    }
-    responseObserver.onNext(FetchRecordResponse.getDefaultInstance());
     responseObserver.onCompleted();
   }
 }

@@ -58,7 +58,7 @@ public class TracingMetadataUtils {
    * version.
    */
   public static Context contextWithMetadata(String commandName) {
-    return contextWithMetadata("", "", commandName);
+    return contextWithMetadata("", "", commandName, "");
   }
 
   /**
@@ -69,8 +69,9 @@ public class TracingMetadataUtils {
    * version.
    */
   public static Context contextWithMetadata(
-      String buildRequestId, String commandId, ActionKey actionKey) {
-    return contextWithMetadata(buildRequestId, commandId, actionKey.getDigest().getHash());
+      String buildRequestId, String commandId, ActionKey actionKey, String toolName) {
+    return contextWithMetadata(
+        buildRequestId, commandId, actionKey.getDigest().getHash(), toolName);
   }
 
   /**
@@ -81,16 +82,17 @@ public class TracingMetadataUtils {
    * version.
    */
   public static Context contextWithMetadata(
-      String buildRequestId, String commandId, String actionId) {
+      String buildRequestId, String invocationId, String actionId, String toolName) {
     Preconditions.checkNotNull(buildRequestId);
-    Preconditions.checkNotNull(commandId);
+    Preconditions.checkNotNull(invocationId);
     Preconditions.checkNotNull(actionId);
     return contextWithMetadata(
         RequestMetadata.newBuilder()
             .setCorrelatedInvocationsId(buildRequestId)
-            .setToolInvocationId(commandId)
+            .setToolInvocationId(invocationId)
             .setActionId(actionId)
-            .setToolDetails(ToolDetails.newBuilder().setToolName("remote_client"))
+            .setToolDetails(ToolDetails.newBuilder().setToolName(
+                toolName.isEmpty() ? "remote_client" : toolName))
             .build());
   }
 

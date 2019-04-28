@@ -235,7 +235,7 @@ class ByteStreamUploader extends AbstractReferenceCounted {
             verbosity,
             2,
             "%s> Uploading batch of %d blobs, total size %d bytes",
-            record.getCommandParameters().getName(),
+            record.getCommandParameters().getId(),
             batch.size(),
             size);
       } else {
@@ -243,7 +243,7 @@ class ByteStreamUploader extends AbstractReferenceCounted {
             verbosity,
             2,
             "%s> Uploading %s as a single input",
-            record.getCommandParameters().getName(),
+            record.getCommandParameters().getId(),
             batch.get(0));
       }
       result.add(batch);

@@ -41,7 +41,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -225,12 +224,12 @@ public final class TreeNodeRepository {
   private final Path execRoot;
   private final FileCache inputFileCache;
   private final ConcurrentMap<File, TreeNode> staticDirectoryCache = Maps.newConcurrentMap();
-  private final Map<Digest, File> reverseInputMap = new HashMap<>();
+  private final ConcurrentMap<Digest, File> reverseInputMap = Maps.newConcurrentMap();
   // For directories that are themselves artifacts, map of the File to the Merkle hash
-  private final Map<TreeNode, Digest> treeNodeDigestCache = new HashMap<>();
-  private final Map<Digest, TreeNode> digestTreeNodeCache = new HashMap<>();
-  private final Map<TreeNode, Directory> directoryCache = new HashMap<>();
-  private final Map<TreeNode, NodeStats> directoryStatCache = new HashMap<>();
+  private final ConcurrentMap<TreeNode, Digest> treeNodeDigestCache = Maps.newConcurrentMap();
+  private final ConcurrentMap<Digest, TreeNode> digestTreeNodeCache = Maps.newConcurrentMap();
+  private final ConcurrentMap<TreeNode, Directory> directoryCache = Maps.newConcurrentMap();
+  private final ConcurrentMap<TreeNode, NodeStats> directoryStatCache = Maps.newConcurrentMap();
   private final DigestUtil digestUtil;
   private final List<Path> dynamicInputs;
 
@@ -413,7 +412,7 @@ public final class TreeNodeRepository {
     return interner.intern(new TreeNode(entries, null));
   }
 
-  private synchronized Directory getOrComputeDirectory(TreeNode node) throws IOException {
+  private Directory getOrComputeDirectory(TreeNode node) throws IOException {
     // Assumes all child digests have already been computed!
     Preconditions.checkArgument(!node.isLeaf());
     Directory directory = directoryCache.get(node);
@@ -465,7 +464,7 @@ public final class TreeNodeRepository {
   // Recursively traverses the tree, expanding and computing Merkle digests for nodes for which
   // they have not yet been computed and cached.
   public void computeMerkleDigests(TreeNode root) throws IOException {
-    synchronized (this) {
+    synchronized (root) {
       if (directoryCache.get(root) != null) {
         // Strong assumption: the cache is valid, i.e. parent present implies children present.
         return;
@@ -475,7 +474,9 @@ public final class TreeNodeRepository {
       for (TreeNode child : children(root)) {
         computeMerkleDigests(child);
       }
-      getOrComputeDirectory(root);
+      synchronized (root) {
+        getOrComputeDirectory(root);
+      }
     }
   }
 

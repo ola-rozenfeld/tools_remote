@@ -283,7 +283,7 @@ public class GrpcRemoteCache extends AbstractRemoteActionCache {
         options.verbosity,
         2,
         "%s> Got %d CAS cache misses out of %d unique input blobs",
-        record.getCommandParameters().getName(),
+        record.getCommandParameters().getId(),
         missing.size(),
         numDigests);
     return missing;
@@ -303,7 +303,6 @@ public class GrpcRemoteCache extends AbstractRemoteActionCache {
    */
   public void ensureInputsPresent(
       TreeNodeRepository repository,
-      Path execRoot,
       TreeNode root,
       Action action,
       Command command,
@@ -352,11 +351,10 @@ public class GrpcRemoteCache extends AbstractRemoteActionCache {
             options.verbosity,
             3,
             "%s> CAS cache file miss: %s",
-            record.getCommandParameters().getName(),
+            record.getCommandParameters().getId(),
             file.toString());
-        if (record.hasExecutionData()) {
-          ExecutionData.Builder execData = record.getExecutionDataBuilder();
-          execData.addInputFileCasMisses(file.toString());
+        if (record.getCommandParameters().getSaveExecutionData()) {
+          record.getExecutionDataBuilder().addInputFileCasMisses(file.toString());
         }
       }
     }

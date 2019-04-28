@@ -31,10 +31,11 @@ option java_outer_classname = "CommandServerProto";
 
 // Passed to CommandServer.run to initiate execution of a remote command.
 message RunRequest {
-  // Command and command arguments. Does not include startup arguments.
-  repeated string command = 1;
+  // Properties of the command to run.
+  RunCommandParameters command = 1;
 }
 
+// Result of a command execution returned by the proxy.
 message RunResult {
   enum Status {
     UNKNOWN = 0;
@@ -55,6 +56,8 @@ message RunResult {
   // Optional exception trace or other message that should be displayed.
   string message = 3;
 
+  // If action was run remotely, this is the metadata returned by the remote
+  // server.
   build.bazel.remote.execution.v2.ExecutedActionMetadata metadata = 4;
 }
 
@@ -66,91 +69,216 @@ message RunResponse {
   // Standard error of the command, chunked. May be empty.
   string stderr = 2;
 
+  // Result of the command execution.
   RunResult result = 3;
 }
 
+// A statistic of a single execution metric, for example time_ms spent in
+// a given stage.
 message Stat {
+  // Commands for which the stat value was the highest.
   message Outlier {
-    string name = 1;
+    // The command id.
+    string id = 1;
+
+    // The recorded outlier value.
     int64 value = 2;
   }
+  // The median stat value.
   double median = 1;
+
+  // The highest 75% stat value.
   double percentile_75 = 2;
+
+  // The highest 85% stat value.
   double percentile_85 = 3;
+
+  // The highest 95% stat value.
   double percentile_95 = 4;
+
+  // Simple sum of all values.
   int64 total = 5;
+
+  // For time stats, this is the sum of non-overlapping intervals.
   int64 total_parallel_time_ms = 6;
+
+  // Commands for which the stat value was the highest.
   repeated Outlier outliers = 7;
 }
 
-// These are all milliseconds.
+// Stats received from the remote server.
 message RemoteExecutionStats {
+  // Time ms from when the request was received to when it was passed to the
+  // remote worker.
   Stat queued = 1;
+
+  // Total time ms the action spent on the remote worker.
   Stat worker = 2;
+
+  // Time ms the action spent on the remote worker downloading inputs from CAS.
   Stat input_fetch = 3;
+
+  // Time ms the action spent on the remote worker executing the command.
   Stat execution = 4;
+
+  // Time ms the action spent on the remote worker uploading outputs to CAS.
   Stat output_upload = 5;
 }
 
-// These are all milliseconds.
+// Stats of the client proxy.
 message LocalExecutionStats {
+  // Time ms from receiving the action to processing start.
   Stat queued = 1;
+
+  // Time ms taken for computing the input Merkle tree.
   Stat compute_input_tree = 2;
+
+  // Time ms taken for checking the remote action cache.
   Stat check_action_cache = 3;
+
+  // Time ms taken for uploading the inputs to remote CAS.
   Stat upload_inputs = 4;
+
+  // Time ms taken for remote execution.
   Stat execute = 5;
+
+  // Time ms taken for downloading the outputs from remote CAS.
   Stat download_outputs = 6;
+
+  // Overall time ms spent on the proxy.
   Stat total_local = 7;
 }
 
+// Stats of action properties.
 message ActionStats {
+  // Number of overall action inputs (input files and other blobs).
   Stat num_inputs = 1;
+
+  // Total bytes of all the inputs.
   Stat total_input_bytes = 2;
+
+  // Number of actual produced action outputs (not listed outputs).
   Stat num_outputs = 3;
+
+  // Total bytes of actual produced outputs.
   Stat total_output_bytes = 4;
 }
 
+// Statistics of all proxy executions at a given time.
 message ProxyStats {
+  // Finished records grouped by status.
   message StatByStatus {
+    // Execution status.
     RunResult.Status status = 1;
+
+    // Number of records having this status.
     int32 count = 2;
   }
+
+  // Records grouped by execution stage.
   message StatByStage {
+    // Execution stage.
     RunRecord.Stage stage = 1;
+
+    // Number of records having this stage.
     int32 count = 2;
   }
+
+  // The timestamp the earliest saved record was received.
   google.protobuf.Timestamp start_ts = 1;
+
+  // The timestamp the latest saved record has finished processing.
   google.protobuf.Timestamp end_ts = 2;
+
+  // Finished records grouped by status.
   repeated StatByStatus finished_by_status = 3;
+
+  // All records grouped by execution stage.
   repeated StatByStage records_by_stage = 4;
+
+  // Overall number of blobs that needed to be uploaded to CAS.
   int32 cas_cache_misses = 5;
+
+  // Overall CAS hit ratio.
   float cas_cache_hit_ratio = 6;
+
+  // Overall action cache hit ratio.
   float ac_cache_hit_ratio = 7;
+
+  // Number of records that failed remotely and re-executed locally.
   int32 local_fallback_total = 8;
+
+  // Statistics of all records properties.
   ActionStats action_stats = 9;
+
+  // Statistics of the proxy run times.
   LocalExecutionStats local_execution_stats = 10;
+
+  // Statistics of the remote server run times.
   RemoteExecutionStats remote_execution_stats = 11;
 }
 
-// Wraps RunRemoteCommand parameters.
+// The command to be executed remotely.
 message RunCommandParameters {
+  // An optional id to use to identify a build.
   string build_request_id = 1;
+
+  // An optional id to use to identify an invocation.
   string invocation_id = 2;
-  string name = 3;
-  bool accept_cached = 4;
-  bool do_not_cache = 5;
-  repeated string inputs = 6;
-  repeated string output_files = 7;
-  repeated string output_directories = 8;
-  repeated string command = 9;
-  repeated string ignore_inputs = 10;
-  map<string,string> environment_variables = 11;
-  map<string,string> platform = 12;
-  string server_logs_path = 13;
-  int32 execution_timeout = 14;
-  string working_directory = 15;
+
+  // An optional identifier of this command.
+  string id = 3;
+
+  // An optional tool name to pass to the remote server for logging.
+  string tool_name = 4;
+
+  // Whether to accept remotely cached action results.
+  bool accept_cached = 5;
+
+  // When set, this action results will not be cached remotely.
+  bool do_not_cache = 6;
+
+  // Input paths (files or directories) relative to exec root to include for
+  // command execution.
+  repeated string inputs = 7;
+
+  // Output files relative to exec root to download after command executes.
+  repeated string output_files = 8;
+
+  // Output directories relative to exec root to download after execution.
+  repeated string output_directories = 9;
+
+  // Command line elements to execute.
+  repeated string command = 10;
+
+  // Inputs to ignore, as regular expressions.
+  repeated string ignore_inputs = 11;
+
+  // Environment variables to pass through to remote execution.
+  map<string,string> environment_variables = 12;
+
+  // The platform to use for the remote execution.
+  map<string,string> platform = 13;
+
+  // Optional absolute path to save server logs for failed actions.
+  string server_logs_path = 14;
+
+  // If > 0, the maximum number of seconds to wait for remote action execution.
+  int32 execution_timeout = 15;
+
+  // When set, the proxy saves nthe full execution data for the executed action.
+  bool save_execution_data = 16;
+
+  // When set, the action will be run locally if it fails remotely.
+  bool local_fallback = 17;
+
+  // The working directory, relative to the exec root, for the command to run
+  // in. It must be a directory which exists in the input tree. If it is left
+  // empty, then the action is run in the exec root.
+  string working_directory = 18;
 }
 
+// Collection of timestamps of various proxy execution stages.
 message LocalTimestamps {
   google.protobuf.Timestamp queued_start = 1;
   google.protobuf.Timestamp queued_end = 2;
@@ -164,17 +292,28 @@ message LocalTimestamps {
   google.protobuf.Timestamp execute_end = 10;
   google.protobuf.Timestamp download_outputs_start = 11;
   google.protobuf.Timestamp download_outputs_end = 12;
-  // More when local fallback is implemented.
+  // TODO(olaola): add more when local fallback is implemented.
 }
 
+// Properties of an executed action.
 message ActionMetadata {
+  // Number of overall action inputs (input files and other blobs).
   int32 num_inputs = 1;
+
+  // Total bytes of all the inputs.
   int64 total_input_bytes = 2;
+
+  // Number of actual produced action outputs (not listed outputs).
   int32 num_outputs = 3;
+
+  // Total bytes of actual produced outputs.
   int64 total_output_bytes = 4;
+
+  // Number of inputs that needed to be uploaded to CAS.
   int32 cas_cache_misses = 5;
 }
 
+// Properties of a file.
 message File {
   // Path to the file relative to the execution root.
   string path = 1;
@@ -183,15 +322,25 @@ message File {
   build.bazel.remote.execution.v2.Digest digest = 2;
 }
 
-// Full data that can be used to debug cache misses.
+// Full execution data that can be used to debug cache misses.
 message ExecutionData {
+  // All the action input files, including traversed input directories.
   repeated File input_files = 1;
+
+  // All the local files that needed to be uploaded to remote CAS.
   repeated string input_file_cas_misses = 5;
+
+  // Actual produced output files.
   repeated File output_files = 2;
+
+  // Command proto digest (command proto is one of the input blobs).
   build.bazel.remote.execution.v2.Digest command_digest = 3;
+
+  // Action proto digest (action proto is one of the input blobs).
   build.bazel.remote.execution.v2.Digest action_digest = 4;
 }
 
+// The full record of a single command execution.
 message RunRecord {
   // Execution stages, in topological order.
   enum Stage {
@@ -206,45 +355,67 @@ message RunRecord {
     LOCAL_FALLBACK_UPLOADING_OUTPUTS = 8;
     FINISHED = 9;
   }
+  // The current execution stage.
   Stage stage = 1;
+
+  // Parameters of the command to execute.
   RunCommandParameters command_parameters = 2;
+
+  // Result, if available.
   RunResult result = 3;
+
+  // Properties of the action.
   ActionMetadata action_metadata = 4;
+
+  // Timestamps of the proxy execution.
   LocalTimestamps local_timestamps = 5;
+
+  // Saved failed remote result, before local re-execution.
   RunResult result_before_local_fallback = 6;
+
+  // Full execution data, if available (not saved by default).
   ExecutionData execution_data = 7;
 }
 
+// Used in Stats rpc: query the proxy server about the stats of its current state,
 message StatsRequest {
+  // If set, returns the full list of saved RunRecords.
   bool full = 1;
+
+  // If set, the server will compute the stats of all records.
+  // One of full/summary should be set.
   bool summary = 2;
+
+  // Optional: restrict the results to begin after from_ts.
   google.protobuf.Timestamp from_ts = 3;
+
+  // Optional: restrict the results to finish before to_ts.
   google.protobuf.Timestamp to_ts = 4;
+
+  // Optional: restrict the results to records having this invocation_id.
   string invocation_id = 5;
+
+  // Optional: restrict the results to records having this status.
   RunResult.Status status = 6;
+
+  // Optional: restrict the results to records having this command_id.
+  string command_id = 7;
 }
 
+// Used in Stats rpc: streamed proxy response.
 message StatsResponse {
+  // If summary was set, the proxy-computed stats on the requested records.
+  // Will only be set in the first response.
   ProxyStats proxy_stats = 1;
+
+  // If full was set, the full list of proxy records.
   repeated RunRecord run_records = 2;
-}
-
-message FetchRecordRequest {
-  string command_id = 1;
-  string invocation_id = 2;
-}
-
-message FetchRecordResponse {
-  RunRecord record = 1;
 }
 
 service CommandService {
   // Run a remote command and wait for completion.
   rpc Run (RunRequest) returns (stream RunResponse) {}
 
-  // Gets information about currently executing commands.
+  // Gets information about finished and currently executing commands.
   rpc Stats (StatsRequest) returns (stream StatsResponse) {}
-
-  // Fetches an executed command by id.
-  rpc FetchRecord (FetchRecordRequest) returns (FetchRecordResponse) {}
 }
