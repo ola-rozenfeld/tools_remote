@@ -1,4 +1,5 @@
 #include "src/main/cc/proxy_client/proxy_client.h"
+#include "src/main/cc/proxy_client/common_utils.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -27,6 +28,7 @@
 #include "gflags/gflags.h"
 #include "src/main/cc/ipc/goma_ipc.h"
 #include "src/main/cc/proxy_client/javac_remote_actions.h"
+#include "src/main/cc/proxy_client/link_command_inputs.h"
 #include "src/main/proto/command_server.grpc.pb.h"
 #include "src/main/proto/command_server.pb.h"
 #include "src/main/proto/include_processor.pb.h"
@@ -87,15 +89,6 @@ using std::max;
 const char* kFileArgPrefix = "file:";
 const string kPWDOverride = "/proc/self/cwd";
 
-bool PathExists(const string& s, bool *is_directory) {
-  struct stat st;
-  if (stat(s.c_str(), &st) == 0) {
-    *is_directory = (st.st_mode & S_IFDIR) != 0;
-    return true;
-  }
-  return false;
-}
-
 string GetCwd() {
   char temp[PATH_MAX];
   return string(getcwd(temp, sizeof(temp)) ? temp : "");
@@ -114,11 +107,12 @@ string NormalizedRelativePath(const string& cwd, const string& path) {
       iter = segments.erase(iter);
       continue;
     }
-    if (*iter == "..") {
+
+    auto prev_iter = iter - 1;
+    if (*iter == ".." && prev_iter->find("$") == string::npos) {
       // If the previous segment has any one of the following characters,
       // don't erase the whole previous segment but instead erase only the
       // relevant portions of the previous segment.
-      auto prev_iter = iter - 1;
       const int single_quote_pos = prev_iter->find_last_of("'");
       const int space_pos = prev_iter->find_last_of(" ");
       const int double_quote_pos = prev_iter->find_last_of("\"");
@@ -199,6 +193,15 @@ void FindFiles(const string& cmd, set<string>* files) {
   }
   if (cmd.find(":") != string::npos) {
     for (const auto& c : absl::StrSplit(cmd, ':', absl::SkipEmpty())) {
+      FindFiles(string(c), files);
+    }
+    return;
+  }
+  // Certain link commands have a "," in their options that refers to a file,
+  // so split the names by "," as well and check if each segment is a file.
+  // Ex: -Wl,--version-script,frameworks/rs/libRS.map
+  if (cmd.find(",") != string::npos) {
+    for (const auto& c : absl::StrSplit(cmd, ',', absl::SkipEmpty())) {
       FindFiles(string(c), files);
     }
     return;
@@ -346,6 +349,7 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
   ExpandFileArguments(&inputs_from_args);
 
   bool next_is_input = false;
+  bool is_link = false;
   *is_compile = false;
   set<string> cc_input_args({"-I", "-c", "-isystem", "-quote"});
   vector<string> input_prefixes({"-L", "--gcc_toolchain"});
@@ -360,6 +364,7 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
     for (const string& prefix : input_prefixes) {
       if (absl::StartsWith(argv[i], prefix)) {
         inputs_from_args.insert(argv[i] + prefix.length());
+        is_link = is_link || (prefix == "-L");
       }
     }
     if (!strcmp(argv[i], "-D__ASSEMBLY__")) {
@@ -419,11 +424,16 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
     inputs->insert("prebuilts/jdk/jdk9/linux-x86");
     inputs->insert("external/icu");
     FindAllFilesFromCommand(argc, argv, inputs);
+  } else if (is_link) {
+    use_args_inputs = true;
+    inputs->insert("prebuilts/gcc");
+    inputs->insert("prebuilts/clang");
+    FindAllFilesFromCommand(argc, argv, inputs);
+    FindLibraryInputs(argc, argv, inputs);
   } else if (FLAGS_force_remote) {
     use_args_inputs = true;
     FindAllFilesFromCommand(argc, argv, inputs);
   }
-
   if (use_args_inputs) {
     inputs->insert(inputs_from_args.begin(), inputs_from_args.end());
   }
@@ -477,6 +487,7 @@ int CreateRunRequest(int argc, char** argv, const char** env,
     cerr << cmd_id << "> Failed to compute inputs\n";
     return compute_input_res;
   }
+
   if (!inputs.empty()) {
     req->add_command("--inputs");
   }
@@ -491,6 +502,7 @@ int CreateRunRequest(int argc, char** argv, const char** env,
     if (!allow_output_directories_as_inputs && is_directory && absl::StartsWith(inp, FLAGS_out_dir + "/")) {
       continue;
     }
+
     if (!allow_outputs_under_inputs) {
       bool found = false;
       for (const auto& output : outputs) {
@@ -505,6 +517,7 @@ int CreateRunRequest(int argc, char** argv, const char** env,
     }
     req->add_command(inp);
   }
+
   req->add_command("--command");
   for (int i = 0; i < argc; ++i) {
     req->add_command(NormalizedRelativePath(cwd, string(argv[i])));
