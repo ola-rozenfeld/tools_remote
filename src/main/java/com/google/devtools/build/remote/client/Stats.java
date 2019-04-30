@@ -312,8 +312,8 @@ public class Stats {
         afterAcCall++;
       }
       String id = rec.getCommandParameters().getId();
-      if (rec.hasResult() && rec.getResult().hasMetadata()) {
-        remoteStats.addDataPoint(id, rec.getResult().getMetadata());
+      if (rec.hasRemoteMetadata()) {
+        remoteStats.addDataPoint(id, rec.getRemoteMetadata());
       }
       if (rec.hasLocalTimestamps()) {
         LocalTimestamps ts = rec.getLocalTimestamps();

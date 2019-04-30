@@ -272,11 +272,15 @@ message RunRecord {
   // Timestamps of the proxy execution.
   LocalTimestamps local_timestamps = 5;
 
+  // If action was run remotely, these are the timestamps returned by the remote
+  // server.
+  build.bazel.remote.execution.v2.ExecutedActionMetadata remote_metadata = 6;
+
   // Saved failed remote result, before local re-execution.
-  RunResult result_before_local_fallback = 6;
+  RunResult result_before_local_fallback = 7;
 
   // Full execution data, if available (not saved by default).
-  ExecutionData execution_data = 7;
+  ExecutionData execution_data = 8;
 }
 
 // Used in Stats rpc: query the proxy server about the stats of its current state,

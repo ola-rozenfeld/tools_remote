@@ -440,7 +440,7 @@ public class RemoteRunner {
                   ActionResult res = reply.getResult();
                   RunResult.Builder result = downloadRemoteResults(res, outErr, record);
                   if (res.hasExecutionMetadata()) {
-                    result.setMetadata(res.getExecutionMetadata());
+                    record.setRemoteMetadata(res.getExecutionMetadata());
                   }
                   if (reply.getCachedResult()) {
                     result.setStatus(Status.CACHE_HIT);

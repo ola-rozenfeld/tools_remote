@@ -22,8 +22,6 @@ syntax = "proto3";
 
 package remote_client;
 
-import "build/bazel/remote/execution/v2/remote_execution.proto";
-
 option java_package = "com.google.devtools.build.lib.remote.proxy";
 option java_multiple_files = true;
 option java_outer_classname = "CommandsProto";
@@ -119,10 +117,6 @@ message RunResult {
 
   // Optional exception trace or other message that should be displayed.
   string message = 3;
-
-  // If action was run remotely, this is the metadata returned by the remote
-  // server.
-  build.bazel.remote.execution.v2.ExecutedActionMetadata metadata = 4;
 }
 
 // Contains metadata and result data for a command execution.

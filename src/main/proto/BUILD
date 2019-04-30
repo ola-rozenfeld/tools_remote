@@ -25,9 +25,6 @@ java_proto_library(
 proto_library(
     name = "commands_proto",
     srcs = ["commands.proto"],
-    deps = [
-        "@remoteapis//build/bazel/remote/execution/v2:remote_execution_proto",
-    ],
 )
 
 proto_library(
@@ -46,7 +43,7 @@ cc_grpc_library(
     proto_only = False,
     use_external = False,
     well_known_protos = True,
-    deps = ["@remoteapis//build/bazel/remote/execution/v2:remote_execution_cc_proto"],
+    deps = [],
 )
 
 cc_grpc_library(
