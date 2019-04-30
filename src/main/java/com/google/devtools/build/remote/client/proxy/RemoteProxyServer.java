@@ -14,8 +14,10 @@
 
 package com.google.devtools.build.remote.client.proxy;
 
+import com.google.common.collect.Queues;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.ParameterException;
+import com.google.devtools.build.lib.remote.proxy.RunRecord;
 import com.google.devtools.build.remote.client.AuthAndTLSOptions;
 import com.google.devtools.build.remote.client.RemoteClient;
 import com.google.devtools.build.remote.client.RemoteClientOptions;
@@ -23,13 +25,7 @@ import com.google.devtools.build.remote.client.RemoteOptions;
 import com.google.devtools.build.remote.client.util.Utils;
 import io.grpc.Server;
 import io.grpc.netty.NettyServerBuilder;
-
-import com.google.devtools.build.lib.remote.proxy.StatsResponse;
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
-import com.google.protobuf.TextFormat;
-import java.io.InputStreamReader;
-import java.io.FileInputStream;
-import java.nio.file.Paths;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * Implements a remote proxy server that accepts work items as protobufs and sends them to
@@ -61,9 +57,12 @@ public final class RemoteProxyServer {
     }
 
     RemoteClient client = new RemoteClient(remoteOptions, remoteClientOptions, authAndTlsOptions);
+    ConcurrentLinkedQueue<RunRecord.Builder> records = Queues.newConcurrentLinkedQueue();
     Server server = NettyServerBuilder.forPort(proxyOptions.listenPort)
         .maxMessageSize(100 * 1024 * 1024)
-        .addService(new CommandServer(proxyOptions, client)).build();
+        .addService(new CommandServer(proxyOptions, client, records))
+        .addService(new StatServer(records))
+        .build();
     Utils.vlog(
         client.verbosity(),
         1,

@@ -14,26 +14,18 @@
 
 package com.google.devtools.build.remote.client.proxy;
 
-import com.google.common.collect.Queues;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.devtools.build.lib.remote.proxy.RunRecord;
+import com.google.devtools.build.lib.remote.proxy.RunResult.Status;
 import com.google.devtools.build.lib.remote.proxy.RunRequest;
 import com.google.devtools.build.lib.remote.proxy.RunResponse;
-import com.google.devtools.build.lib.remote.proxy.RunResult;
-import com.google.devtools.build.lib.remote.proxy.RunResult.Status;
-import com.google.devtools.build.lib.remote.proxy.StatsRequest;
-import com.google.devtools.build.lib.remote.proxy.StatsResponse;
-import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc.CommandServiceImplBase;
-import com.google.devtools.build.remote.client.AuthAndTLSOptions;
+import com.google.devtools.build.lib.remote.proxy.CommandsGrpc.CommandsImplBase;
 import com.google.devtools.build.remote.client.RecordingOutErr;
 import com.google.devtools.build.remote.client.RemoteClient;
-import com.google.devtools.build.remote.client.RemoteOptions;
-import com.google.devtools.build.remote.client.RemoteClientOptions;
 import com.google.devtools.build.remote.client.RemoteRunner;
-import com.google.devtools.build.remote.client.Stats;
 import com.google.devtools.build.remote.client.util.Utils;
 import io.grpc.StatusRuntimeException;
 import io.grpc.Status.Code;
@@ -43,16 +35,19 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-/** A basic implementation of a {@link CommandServiceImplBase} service. */
-final class CommandServer extends CommandServiceImplBase {
+/** A basic implementation of a {@link CommandsImplBase} service. */
+final class CommandServer extends CommandsImplBase {
   private final ListeningExecutorService executorService;
   private final RemoteClient client;
   private final RemoteProxyOptions proxyOptions;
   // TODO(olaola): clear stuff out from time to time.
-  private final ConcurrentLinkedQueue<RunRecord.Builder> records =
-      Queues.newConcurrentLinkedQueue();
+  private final ConcurrentLinkedQueue<RunRecord.Builder> records;
 
-  public CommandServer(RemoteProxyOptions proxyOptions, RemoteClient client) {
+  public CommandServer(
+      RemoteProxyOptions proxyOptions,
+      RemoteClient client,
+      ConcurrentLinkedQueue<RunRecord.Builder> records) {
+    this.records = records;
     this.proxyOptions = proxyOptions;
     this.client = client;
     ThreadPoolExecutor realExecutor =
@@ -87,7 +82,7 @@ final class CommandServer extends CommandServiceImplBase {
   }
 
   @Override
-  public void run(RunRequest req, StreamObserver<RunResponse> responseObserver) {
+  public void runCommand(RunRequest req, StreamObserver<RunResponse> responseObserver) {
     Utils.vlog(client.verbosity(), 3, "Received request:\n%s", req);
     RecordingOutErr outErr = new RecordingOutErr();
     RunRecord.Builder record = client.newFromCommandParameters(req.getCommand());
@@ -128,35 +123,5 @@ final class CommandServer extends CommandServiceImplBase {
           }
         },
         MoreExecutors.directExecutor());
-  }
-
-  @Override
-  public void stats(StatsRequest req, StreamObserver<StatsResponse> responseObserver) {
-    StatsResponse.Builder response = StatsResponse.newBuilder();
-    if (req.getSummary()) {
-      response.setProxyStats(Stats.computeStats(req, records));
-    }
-    if (req.getFull()) {
-      long frameSize = 0;
-      for (RunRecord.Builder rec : records) {
-        if (!Stats.shouldCountRecord(rec, req)) {
-          continue;
-        }
-        long recordSize = rec.build().getSerializedSize();
-        if (frameSize + recordSize > 4 * 1024 * 1024 - 2000) {
-          responseObserver.onNext(response.build());
-          response.clear();
-          frameSize = 0;
-        }
-        frameSize += recordSize;
-        response.addRunRecords(rec);
-      }
-      if (response.getRunRecordsCount() > 0) {
-        responseObserver.onNext(response.build());
-      }
-    } else {
-      responseObserver.onNext(response.build());
-    }
-    responseObserver.onCompleted();
   }
 }

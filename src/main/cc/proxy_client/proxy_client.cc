@@ -29,8 +29,8 @@
 #include "src/main/cc/ipc/goma_ipc.h"
 #include "src/main/cc/proxy_client/javac_remote_actions.h"
 #include "src/main/cc/proxy_client/link_command_inputs.h"
-#include "src/main/proto/command_server.grpc.pb.h"
-#include "src/main/proto/command_server.pb.h"
+#include "src/main/proto/commands.grpc.pb.h"
+#include "src/main/proto/commands.pb.h"
 #include "src/main/proto/include_processor.pb.h"
 #include "src/main/proto/include_processor.grpc.pb.h"
 
@@ -547,10 +547,10 @@ int ExecuteRemotely(const RunRequest& req) {
   }
   auto channel =
       grpc::CreateChannel(proxy_address, grpc::InsecureChannelCredentials());
-  std::unique_ptr<CommandService::Stub> stub(CommandService::NewStub(channel));
+  std::unique_ptr<Commands::Stub> stub(Commands::NewStub(channel));
   RunResponse resp;
   ClientContext context;  // No deadline.
-  std::unique_ptr<ClientReader<RunResponse> > reader(stub->Run(&context, req));
+  std::unique_ptr<ClientReader<RunResponse> > reader(stub->RunCommand(&context, req));
   while (reader->Read(&resp)) {
     if (!resp.stdout().empty()) {
       cout << resp.stdout();

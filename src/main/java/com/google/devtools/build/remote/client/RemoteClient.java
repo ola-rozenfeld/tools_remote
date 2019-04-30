@@ -34,8 +34,10 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.hash.Hashing;
 import com.google.common.io.Files;
-import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc;
-import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc.CommandServiceBlockingStub;
+import com.google.devtools.build.lib.remote.proxy.CommandsGrpc;
+import com.google.devtools.build.lib.remote.proxy.CommandsGrpc.CommandsBlockingStub;
+import com.google.devtools.build.lib.remote.proxy.StatsGrpc;
+import com.google.devtools.build.lib.remote.proxy.StatsGrpc.StatsBlockingStub;
 import com.google.devtools.build.lib.remote.proxy.LocalTimestamps;
 import com.google.devtools.build.lib.remote.proxy.RunCommandParameters;
 import com.google.devtools.build.lib.remote.proxy.RunRecord;
@@ -107,7 +109,8 @@ public class RemoteClient {
   private RemoteOptions remoteOptions;
   private AuthAndTLSOptions authAndTlsOptions;
   private List<String> proxyTargets;
-  private List<CommandServiceBlockingStub> proxyStubs;
+  private List<CommandsBlockingStub> proxyCmdStubs;
+  private List<StatsBlockingStub> proxyStatStubs;
   private Random rand = new Random();
 
   public RemoteClient(
@@ -124,7 +127,8 @@ public class RemoteClient {
     if (!Strings.isNullOrEmpty(clientOptions.proxy)) {
       // Initialize proxy channels and stubs.
       proxyTargets = new ArrayList<>();
-      proxyStubs = new ArrayList<>();
+      proxyCmdStubs = new ArrayList<>();
+      proxyStatStubs = new ArrayList<>();
       for (int i = 0; i < clientOptions.proxyInstances; ++i) {
         String[] parts = clientOptions.proxy.split(":");
         Preconditions.checkArgument(parts.length == 2, "--proxy should be HOST:PORT");
@@ -132,8 +136,10 @@ public class RemoteClient {
         proxyTargets.add(target);
         ManagedChannel channel = GoogleAuthUtils.newChannel(target, authAndTlsOptions);
         CallCredentials credentials = GoogleAuthUtils.newCallCredentials(authAndTlsOptions);
-        proxyStubs.add(
-            CommandServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials));
+        proxyCmdStubs.add(
+            CommandsGrpc.newBlockingStub(channel).withCallCredentials(credentials));
+        proxyStatStubs.add(
+            StatsGrpc.newBlockingStub(channel).withCallCredentials(credentials));
       }
       return;
     }
@@ -688,17 +694,17 @@ public class RemoteClient {
   }
 
   private void runRemoteProxy(RunRecord.Builder record, OutErr outErr) {
-    Preconditions.checkNotNull(proxyStubs, "--proxy should be set");
-    int proxyInstance = rand.nextInt(proxyStubs.size());
+    Preconditions.checkNotNull(proxyCmdStubs, "--proxy should be set");
+    int proxyInstance = rand.nextInt(proxyCmdStubs.size());
     Utils.vlog(
         remoteOptions.verbosity,
         2,
         "Connecting to proxy at %s...",
         proxyTargets.get(proxyInstance));
     Iterator<RunResponse> replies =
-        proxyStubs
+        proxyCmdStubs
             .get(proxyInstance)
-            .run(RunRequest.newBuilder().setCommand(record.getCommandParameters()).build());
+            .runCommand(RunRequest.newBuilder().setCommand(record.getCommandParameters()).build());
     RunResult result = null;
     while (replies.hasNext()) {
       RunResponse resp = replies.next();
@@ -916,9 +922,9 @@ public class RemoteClient {
         }
       }
     }
-    Preconditions.checkNotNull(proxyStubs, "--proxy should be set");
-    for (CommandServiceBlockingStub proxyStub : proxyStubs) {
-      Iterator<StatsResponse> replies = proxyStub.stats(req);
+    Preconditions.checkNotNull(proxyStatStubs, "--proxy should be set");
+    for (StatsBlockingStub proxyStub : proxyStatStubs) {
+      Iterator<StatsResponse> replies = proxyStub.getStats(req);
       if (replies.hasNext()) {
         StatsResponse resp = replies.next();
         if (resp.getRunRecordsCount() > 0) {
@@ -937,13 +943,16 @@ public class RemoteClient {
   }
 
   private void doProxyStats(ProxyStatsCommand options) throws IOException {
+    Preconditions.checkArgument(
+        options.proxyStatsFile != null || proxyStatStubs != null,
+        "either --proxy_stats_file or --proxy should be set");
     StatsRequest.Builder req =
         StatsRequest.newBuilder()
-            .setFull(options.full || proxyStubs.size() > 1)
+            .setFull(options.full || proxyStatStubs.size() > 1)
             .setInvocationId(options.invocationId)
             .setCommandId(options.commandId)
             .setStatus(options.status)
-            .setSummary(proxyStubs.size() == 1);
+            .setSummary(options.proxyStatsFile != null || proxyStatStubs.size() == 1);
     if (options.fromTs > 0) {
       req.setFromTs(Timestamp.newBuilder().setSeconds(options.fromTs));
     }
@@ -968,11 +977,10 @@ public class RemoteClient {
       System.out.println(aggr.toString());
       return;
     }
-    Preconditions.checkNotNull(proxyStubs, "--proxy should be set");
     StatsResponse.Builder aggr = StatsResponse.newBuilder();
     List<RunRecord.Builder> records = new ArrayList<>();
-    for (CommandServiceBlockingStub proxyStub : proxyStubs) {
-      Iterator<StatsResponse> replies = proxyStub.stats(req.build());
+    for (StatsBlockingStub proxyStub : proxyStatStubs) {
+      Iterator<StatsResponse> replies = proxyStub.getStats(req.build());
       while (replies.hasNext()) {
         StatsResponse resp = replies.next();
         records.addAll(
@@ -990,7 +998,7 @@ public class RemoteClient {
       aggr.addAllRunRecords(
           records.stream().map(RunRecord.Builder::build).collect(Collectors.toList()));
     }
-    if (proxyStubs.size() > 1) {
+    if (proxyStatStubs.size() > 1) {
       aggr.setProxyStats(Stats.computeStats(req.build(), records));
     }
     System.out.println(aggr.toString());
