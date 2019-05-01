@@ -45,8 +45,8 @@ import com.google.common.hash.HashingOutputStream;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
-import com.google.devtools.build.lib.remote.proxy.ExecutionData;
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
+import com.google.devtools.build.lib.remote.stats.ExecutionData;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
 import com.google.devtools.build.remote.client.TreeNodeRepository.TreeNode;
 import com.google.devtools.build.remote.client.util.DigestUtil;
 import com.google.devtools.build.remote.client.util.DigestUtil.ActionKey;
@@ -283,7 +283,7 @@ public class GrpcRemoteCache extends AbstractRemoteActionCache {
         options.verbosity,
         2,
         "%s> Got %d CAS cache misses out of %d unique input blobs",
-        record.getCommandParameters().getId(),
+        record.getCommand().getLabels().getCommandId(),
         missing.size(),
         numDigests);
     return missing;
@@ -351,9 +351,9 @@ public class GrpcRemoteCache extends AbstractRemoteActionCache {
             options.verbosity,
             3,
             "%s> CAS cache file miss: %s",
-            record.getCommandParameters().getId(),
+            record.getCommand().getLabels().getCommandId(),
             file.toString());
-        if (record.getCommandParameters().getSaveExecutionData()) {
+        if (record.getCommand().getExecutionOptions().getSaveExecutionData()) {
           record.getExecutionDataBuilder().addInputFileCasMisses(file.toString());
         }
       }

@@ -17,7 +17,7 @@ package com.google.devtools.build.remote.client.proxy;
 import com.google.common.collect.Queues;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.ParameterException;
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
 import com.google.devtools.build.remote.client.AuthAndTLSOptions;
 import com.google.devtools.build.remote.client.RemoteClient;
 import com.google.devtools.build.remote.client.RemoteClientOptions;

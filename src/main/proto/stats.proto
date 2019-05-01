@@ -26,7 +26,7 @@ import "build/bazel/remote/execution/v2/remote_execution.proto";
 import "google/protobuf/timestamp.proto";
 import "src/main/proto/commands.proto";
 
-option java_package = "com.google.devtools.build.lib.remote.proxy";
+option java_package = "com.google.devtools.build.lib.remote.stats";
 option java_multiple_files = true;
 option java_outer_classname = "StatsProto";
 
@@ -260,8 +260,8 @@ message RunRecord {
   // The current execution stage.
   Stage stage = 1;
 
-  // Parameters of the command to execute.
-  RunCommandParameters command_parameters = 2;
+  // The command to execute.
+  Command command = 2;
 
   // Result, if available.
   RunResult result = 3;
@@ -283,37 +283,40 @@ message RunRecord {
   ExecutionData execution_data = 8;
 }
 
-// Used in Stats rpc: query the proxy server about the stats of its current state,
-message StatsRequest {
-  // If set, returns the full list of saved RunRecords.
-  bool full = 1;
-
-  // If set, the server will compute the stats of all records.
-  // One of full/summary should be set.
-  bool summary = 2;
-
-  // Optional: restrict the results to begin after from_ts.
+// Options for restricting the set of records to a particular subset.
+message SliceOptions {
+  // Records that begin processing after from_ts.
   google.protobuf.Timestamp from_ts = 3;
 
-  // Optional: restrict the results to finish before to_ts.
+  // Records that end processing before to_ts.
   google.protobuf.Timestamp to_ts = 4;
 
-  // Optional: restrict the results to records having this invocation_id.
-  string invocation_id = 5;
+  // Records having a superset of these labels.
+  Labels labels = 5;
 
-  // Optional: restrict the results to records having this status.
+  // Finished records having this run status.
   RunResult.Status status = 6;
+}
 
-  // Optional: restrict the results to records having this command_id.
-  string command_id = 7;
+// Used in Stats rpc: query the proxy server about the stats of its current
+// state.
+message StatsRequest {
+  // If set, returns the full list of saved RunRecords.
+  bool fetch_records = 1;
+
+  // If set, the server will compute the aggregate stats of all records.
+  bool compute_aggregate = 2;
+
+  // Restrict the considered records to this subset.
+  SliceOptions slice_options = 3;
 }
 
 // Used in Stats rpc: streamed proxy response.
 message StatsResponse {
-  // If summary was set, the proxy-computed stats on the requested records.
-  // Will only be set in the first response.
+  // If compute_aggregate was set, the proxy-computed stats on the requested
+  // records. Will only be set in the first response.
   ProxyStats proxy_stats = 1;
 
-  // If full was set, the full list of proxy records.
+  // If fetch_records was set, the full list of proxy records.
   repeated RunRecord run_records = 2;
 }

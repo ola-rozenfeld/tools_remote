@@ -452,11 +452,13 @@ int CreateRunRequest(int argc, char** argv, const char** env,
                      const string& cmd_id, RunRequest* req,
                      bool* is_compile, bool* is_javac) {
   req->Clear();
-  RunCommandParameters* params = req->mutable_command();
-  params->set_id(cmd_id);
-  params->set_invocation_id(FLAGS_invocation_id);
-  params->set_accept_cached(FLAGS_accept_cached);
-  params->set_save_execution_data(FLAGS_save_exec_data);
+  Command* command = req->mutable_command();
+  Labels* labels = command->mutable_labels();
+  labels->set_command_id(cmd_id);
+  labels->set_invocation_id(FLAGS_invocation_id);
+  ExecutionOptions* exec_options = command->mutable_execution_options();
+  exec_options->set_accept_cached(FLAGS_accept_cached);
+  exec_options->set_save_execution_data(FLAGS_save_exec_data);
   string cwd = GetCwd();
   set<string> outputs;
   if (FLAGS_outputs == "") {
@@ -471,7 +473,7 @@ int CreateRunRequest(int argc, char** argv, const char** env,
     }
   }
   for (const auto& output : outputs) {
-    params->add_output_files(NormalizedRelativePath(cwd, output));
+    command->add_output_files(NormalizedRelativePath(cwd, output));
   }
   set<string> inputs;
   int compute_input_res = ComputeInputs(argc, argv, env, cwd, cmd_id, is_compile, is_javac, &inputs);
@@ -503,16 +505,16 @@ int CreateRunRequest(int argc, char** argv, const char** env,
         continue;
       }
     }
-    params->add_inputs(inp);
+    command->add_inputs(inp);
   }
   for (int i = 0; i < argc; ++i) {
-    params->add_command(NormalizedRelativePath(cwd, string(argv[i])));
+    command->add_args(NormalizedRelativePath(cwd, string(argv[i])));
   }
-  params->add_ignore_inputs("\\.d$");
-  params->add_ignore_inputs("\\.P$");
-  params->add_ignore_inputs("\\.o-.*$");
-  params->add_ignore_inputs("\\.git.*$");
-  auto& environment_variables = *(params->mutable_environment_variables());
+  command->add_ignore_inputs("\\.d$");
+  command->add_ignore_inputs("\\.P$");
+  command->add_ignore_inputs("\\.o-.*$");
+  command->add_ignore_inputs("\\.git.*$");
+  auto& environment_variables = *(exec_options->mutable_environment_variables());
   environment_variables["PWD"] = kPWDOverride;
   set<string> whitelist = absl::StrSplit(FLAGS_env_whitelist, ',', absl::SkipEmpty());
   while (*env) {
@@ -523,7 +525,7 @@ int CreateRunRequest(int argc, char** argv, const char** env,
       environment_variables[var] = varval.substr(eq_index+1);
     }
   }
-  auto& platform = *(params->mutable_platform());
+  auto& platform = *(exec_options->mutable_platform());
   platform["container-image"] = "docker://gcr.io/foundry-x-experiments/android-platform@sha256:"
       "56e8072003914010c86702ef94634cdfde7089e4732ceac241d0fe4242957f90";
   platform["jdk-version"] = "10";

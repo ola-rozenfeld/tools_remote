@@ -14,19 +14,21 @@
 package com.google.devtools.build.remote.client;
 
 import build.bazel.remote.execution.v2.ExecutedActionMetadata;
-import com.google.devtools.build.lib.remote.proxy.ActionMetadata;
-import com.google.devtools.build.lib.remote.proxy.ActionStats;
-import com.google.devtools.build.lib.remote.proxy.LocalExecutionStats;
-import com.google.devtools.build.lib.remote.proxy.LocalTimestamps;
-import com.google.devtools.build.lib.remote.proxy.ProxyStats;
-import com.google.devtools.build.lib.remote.proxy.RemoteExecutionStats;
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
-import com.google.devtools.build.lib.remote.proxy.RunRecord.Stage;
-import com.google.devtools.build.lib.remote.proxy.RunResult;
-import com.google.devtools.build.lib.remote.proxy.RunResult.Status;
-import com.google.devtools.build.lib.remote.proxy.StatsRequest;
-import com.google.devtools.build.lib.remote.proxy.Stat;
-import com.google.devtools.build.lib.remote.proxy.Stat.Outlier;
+import com.google.devtools.build.lib.remote.commands.Labels;
+import com.google.devtools.build.lib.remote.commands.RunResult;
+import com.google.devtools.build.lib.remote.commands.RunResult.Status;
+import com.google.devtools.build.lib.remote.stats.ActionMetadata;
+import com.google.devtools.build.lib.remote.stats.ActionStats;
+import com.google.devtools.build.lib.remote.stats.LocalExecutionStats;
+import com.google.devtools.build.lib.remote.stats.LocalTimestamps;
+import com.google.devtools.build.lib.remote.stats.ProxyStats;
+import com.google.devtools.build.lib.remote.stats.RemoteExecutionStats;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
+import com.google.devtools.build.lib.remote.stats.RunRecord.Stage;
+import com.google.devtools.build.lib.remote.stats.SliceOptions;
+import com.google.devtools.build.lib.remote.stats.StatsRequest;
+import com.google.devtools.build.lib.remote.stats.Stat;
+import com.google.devtools.build.lib.remote.stats.Stat.Outlier;
 import com.google.common.math.Quantiles;
 import com.google.common.math.Quantiles;
 import com.google.protobuf.Timestamp;
@@ -264,25 +266,28 @@ public class Stats {
     }
   }
 
-  public static boolean shouldCountRecord(RunRecord.Builder rec, StatsRequest req) {
-    if (!req.getInvocationId().isEmpty() &&
-        !req.getInvocationId().equals(rec.getCommandParameters().getInvocationId())) {
+  public static boolean shouldCountRecord(RunRecord.Builder rec, SliceOptions sliceOptions) {
+    Labels labels = sliceOptions.getLabels();
+    Labels cmdLabels = rec.getCommand().getLabels();
+    if (!labels.getInvocationId().isEmpty() &&
+        !labels.getInvocationId().equals(cmdLabels.getInvocationId())) {
       return false;
     }
-    if (!req.getCommandId().isEmpty() &&
-        !req.getCommandId().equals(rec.getCommandParameters().getId())) {
+    if (!labels.getCommandId().isEmpty() &&
+        !labels.getCommandId().equals(cmdLabels.getCommandId())) {
       return false;
     }
     LocalTimestamps ts = rec.getLocalTimestamps();
-    if (req.hasFromTs() && ts.hasQueuedStart() &&
-        Timestamps.compare(req.getFromTs(), ts.getQueuedStart()) > 0) {
+    if (sliceOptions.hasFromTs() && ts.hasQueuedStart() &&
+        Timestamps.compare(sliceOptions.getFromTs(), ts.getQueuedStart()) > 0) {
       return false;
     }
-    if (req.hasToTs() && (!ts.hasDownloadOutputsEnd() ||
-        Timestamps.compare(req.getToTs(), ts.getDownloadOutputsEnd()) < 0)) {
+    if (sliceOptions.hasToTs() && (!ts.hasDownloadOutputsEnd() ||
+        Timestamps.compare(sliceOptions.getToTs(), ts.getDownloadOutputsEnd()) < 0)) {
       return false;
     }
-    if (req.getStatus() != Status.UNKNOWN && rec.getResult().getStatus() != req.getStatus()) {
+    if (sliceOptions.getStatus() != Status.UNKNOWN &&
+        rec.getResult().getStatus() != sliceOptions.getStatus()) {
       return false;
     }
     return true;
@@ -300,7 +305,7 @@ public class Stats {
     RemoteExecutionStatistics remoteStats = new RemoteExecutionStatistics();
     LocalStatistics localStats = new LocalStatistics();
     for (RunRecord.Builder rec : records) {
-      if (!shouldCountRecord(rec, req)) {
+      if (!shouldCountRecord(rec, req.getSliceOptions())) {
         continue;
       }
       if (rec.hasResultBeforeLocalFallback()) {
@@ -311,7 +316,7 @@ public class Stats {
       if (stage.getNumber() >= stage.UPLOADING_INPUTS.getNumber()) { // Stages are in order.
         afterAcCall++;
       }
-      String id = rec.getCommandParameters().getId();
+      String id = rec.getCommand().getLabels().getCommandId();
       if (rec.hasRemoteMetadata()) {
         remoteStats.addDataPoint(id, rec.getRemoteMetadata());
       }

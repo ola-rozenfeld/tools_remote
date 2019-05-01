@@ -24,7 +24,8 @@ import com.beust.jcommander.converters.FileConverter;
 import com.beust.jcommander.converters.PathConverter;
 import com.beust.jcommander.converters.IParameterSplitter;
 import com.google.common.collect.ImmutableList;
-import com.google.devtools.build.lib.remote.proxy.RunResult.Status;
+import com.google.devtools.build.lib.remote.commands.ExecutionOptions.LocalFallback;
+import com.google.devtools.build.lib.remote.commands.RunResult.Status;
 import com.google.devtools.build.remote.client.util.DigestUtil;
 import java.io.File;
 import java.nio.file.Path;
@@ -362,8 +363,9 @@ public final class RemoteClientOptions {
     @Parameter(
         names = "--local_fallback",
         arity=1,
-        description = "When set, the action will be run locally if it fails remotely.")
-    public boolean localFallback = false;
+        converter = LocalFallbackConverter.class,
+        description = "How/whether to fall back locally if the action fails remotely.")
+    public LocalFallback localFallback = LocalFallback.NONE;
   }
 
   @Parameters(
@@ -434,6 +436,12 @@ public final class RemoteClientOptions {
 
   public static final class StatusConverter extends EnumConverter<Status> {
     StatusConverter(String optionName, Class<Status> clazz) {
+      super(optionName, clazz);
+    }
+  }
+
+  public static final class LocalFallbackConverter extends EnumConverter<LocalFallback> {
+    LocalFallbackConverter(String optionName, Class<LocalFallback> clazz) {
       super(optionName, clazz);
     }
   }

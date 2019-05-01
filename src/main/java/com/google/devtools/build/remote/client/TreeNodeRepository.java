@@ -30,7 +30,7 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.graph.Traverser;
 import com.google.common.io.BaseEncoding;
-import com.google.devtools.build.lib.remote.proxy.ExecutionData;
+import com.google.devtools.build.lib.remote.stats.ExecutionData;
 import com.google.devtools.build.remote.client.util.DigestUtil;
 import com.google.protobuf.ByteString;
 import java.io.IOException;

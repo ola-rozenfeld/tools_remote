@@ -38,7 +38,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
 import com.google.devtools.build.remote.client.util.TracingMetadataUtils;
 import com.google.devtools.build.remote.client.util.Utils;
 import io.grpc.CallCredentials;
@@ -230,12 +230,13 @@ class ByteStreamUploader extends AbstractReferenceCounted {
         nextDigest = toUpload.get(l).digest();
         nextSize = 3 * tagSize + nextDigest.getSizeBytes() + nextDigest.getSerializedSize();
       }
+      String commandId = record.getCommand().getLabels().getCommandId();
       if (batch.size() > 1) {
         Utils.vlog(
             verbosity,
             2,
             "%s> Uploading batch of %d blobs, total size %d bytes",
-            record.getCommandParameters().getId(),
+            commandId,
             batch.size(),
             size);
       } else {
@@ -243,7 +244,7 @@ class ByteStreamUploader extends AbstractReferenceCounted {
             verbosity,
             2,
             "%s> Uploading %s as a single input",
-            record.getCommandParameters().getId(),
+            commandId,
             batch.get(0));
       }
       result.add(batch);

@@ -14,10 +14,10 @@
 
 package com.google.devtools.build.remote.client.proxy;
 
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
-import com.google.devtools.build.lib.remote.proxy.StatsRequest;
-import com.google.devtools.build.lib.remote.proxy.StatsResponse;
-import com.google.devtools.build.lib.remote.proxy.StatsGrpc.StatsImplBase;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
+import com.google.devtools.build.lib.remote.stats.StatsRequest;
+import com.google.devtools.build.lib.remote.stats.StatsResponse;
+import com.google.devtools.build.lib.remote.stats.StatsGrpc.StatsImplBase;
 import com.google.devtools.build.remote.client.Stats;
 import io.grpc.stub.StreamObserver;
 
@@ -32,13 +32,13 @@ final class StatServer extends StatsImplBase {
   @Override
   public void getStats(StatsRequest req, StreamObserver<StatsResponse> responseObserver) {
     StatsResponse.Builder response = StatsResponse.newBuilder();
-    if (req.getSummary()) {
+    if (req.getComputeAggregate()) {
       response.setProxyStats(Stats.computeStats(req, records));
     }
-    if (req.getFull()) {
+    if (req.getFetchRecords()) {
       long frameSize = 0;
       for (RunRecord.Builder rec : records) {
-        if (!Stats.shouldCountRecord(rec, req)) {
+        if (!Stats.shouldCountRecord(rec, req.getSliceOptions())) {
           continue;
         }
         long recordSize = rec.build().getSerializedSize();

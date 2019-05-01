@@ -1,15 +1,15 @@
 cc_library(
     name = "proxy_client_lib",
     srcs = [
+        "common_utils.cc",
         "javac_remote_actions.cc",
         "link_command_inputs.cc",
-        "common_utils.cc",
         "proxy_client.cc",
     ],
     hdrs = [
+        "common_utils.h",
         "javac_remote_actions.h",
         "link_command_inputs.h",
-        "common_utils.h",
         "proxy_client.h",
     ],
     deps = [

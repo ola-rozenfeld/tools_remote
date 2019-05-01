@@ -18,11 +18,11 @@ import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
-import com.google.devtools.build.lib.remote.proxy.RunResult.Status;
-import com.google.devtools.build.lib.remote.proxy.RunRequest;
-import com.google.devtools.build.lib.remote.proxy.RunResponse;
-import com.google.devtools.build.lib.remote.proxy.CommandsGrpc.CommandsImplBase;
+import com.google.devtools.build.lib.remote.commands.RunResult.Status;
+import com.google.devtools.build.lib.remote.commands.RunRequest;
+import com.google.devtools.build.lib.remote.commands.RunResponse;
+import com.google.devtools.build.lib.remote.commands.CommandsGrpc.CommandsImplBase;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
 import com.google.devtools.build.remote.client.RecordingOutErr;
 import com.google.devtools.build.remote.client.RemoteClient;
 import com.google.devtools.build.remote.client.RemoteRunner;
@@ -85,7 +85,7 @@ final class CommandServer extends CommandsImplBase {
   public void runCommand(RunRequest req, StreamObserver<RunResponse> responseObserver) {
     Utils.vlog(client.verbosity(), 3, "Received request:\n%s", req);
     RecordingOutErr outErr = new RecordingOutErr();
-    RunRecord.Builder record = client.newFromCommandParameters(req.getCommand());
+    RunRecord.Builder record = client.newFromCommand(req.getCommand());
     addRecord(record);
     ListenableFuture<Void> future =
         executorService.submit(() -> {
@@ -109,7 +109,7 @@ final class CommandServer extends CommandsImplBase {
                   client.verbosity(),
                   1,
                   "%s> Command failed: status %s, exit code %d, message %s",
-                  record.getCommandParameters().getId(),
+                  record.getCommand().getLabels().getCommandId(),
                   status,
                   record.getResult().getExitCode(),
                   record.getResult().getMessage());
