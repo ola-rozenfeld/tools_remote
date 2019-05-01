@@ -11,13 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//
-// This file contains the protocol used to communicate between the Bazel client
-// and the server. At a high level clients may call the CommandServer.run rpc
-// to initiates a Bazel command and CommandServer.cancel to cancel an in-flight
-// command. CommandServer.ping may be used to check for server liveness without
-// executing any commands. See documentation of individual messages for more
-// details.
 syntax = "proto3";
 
 package include_processor;
@@ -55,17 +48,15 @@ message Stat {
   double percentile_85 = 3;
   double percentile_95 = 4;
   int64 total = 5;
-  int64 total_parallel_time_ms = 6;
-  repeated Outlier outliers = 7;
+  repeated Outlier outliers = 6;
 }
 
 message StatsRequest {}
 
 message IncludeProcessorStats {
   Stat total = 1;
-  Stat compiler_info = 2;
-  int32 compiler_info_cache_misses = 3;
-  float compiler_info_cache_hit_ratio = 4;
+  int32 compiler_info_cache_misses = 2;
+  float compiler_info_cache_hit_ratio = 3;
 }
 
 message StatsResponse {
