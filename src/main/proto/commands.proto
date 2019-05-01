@@ -31,6 +31,49 @@ service Commands {
   rpc RunCommand (RunRequest) returns (stream RunResponse) {}
 }
 
+// Passed to CommandServer.run to initiate execution of a remote command.
+message RunRequest {
+  // Properties of the command to run.
+  Command command = 1;
+}
+
+// Contains metadata and result data for a command execution.
+message RunResponse {
+  // Standard out of the command, chunked. May be empty.
+  string stdout = 1;
+
+  // Standard error of the command, chunked. May be empty.
+  string stderr = 2;
+
+  // Result of the command execution.
+  RunResult result = 3;
+}
+
+// The command to be executed remotely.
+message Command {
+  // Labels used to identify this command.
+  Labels labels = 1;
+
+  // Input paths (files or directories) relative to exec root to include for
+  // command execution.
+  repeated string inputs = 2;
+
+  // Inputs to ignore, as regular expressions.
+  repeated string ignore_inputs = 3;
+
+  // Output files relative to exec root to download after command executes.
+  repeated string output_files = 4;
+
+  // Output directories relative to exec root to download after execution.
+  repeated string output_directories = 5;
+
+  // Command line elements to execute.
+  repeated string args = 6;
+
+  // Options for executing this command.
+  ExecutionOptions execution_options = 7;
+}
+
 // Labels identifying a command.
 message Labels {
   // An optional id to use to identify a command.
@@ -93,37 +136,6 @@ message ExecutionOptions {
   bool save_execution_data = 9;
 }
 
-// The command to be executed remotely.
-message Command {
-  // Labels used to identify this command.
-  Labels labels = 1;
-
-  // Input paths (files or directories) relative to exec root to include for
-  // command execution.
-  repeated string inputs = 2;
-
-  // Inputs to ignore, as regular expressions.
-  repeated string ignore_inputs = 3;
-
-  // Output files relative to exec root to download after command executes.
-  repeated string output_files = 4;
-
-  // Output directories relative to exec root to download after execution.
-  repeated string output_directories = 5;
-
-  // Command line elements to execute.
-  repeated string args = 6;
-
-  // Options for executing this command.
-  ExecutionOptions execution_options = 7;
-}
-
-// Passed to CommandServer.run to initiate execution of a remote command.
-message RunRequest {
-  // Properties of the command to run.
-  Command command = 1;
-}
-
 // Result of a command execution returned by the proxy.
 message RunResult {
   enum Status {
@@ -144,16 +156,4 @@ message RunResult {
 
   // Optional exception trace or other message that should be displayed.
   string message = 3;
-}
-
-// Contains metadata and result data for a command execution.
-message RunResponse {
-  // Standard out of the command, chunked. May be empty.
-  string stdout = 1;
-
-  // Standard error of the command, chunked. May be empty.
-  string stderr = 2;
-
-  // Result of the command execution.
-  RunResult result = 3;
 }
