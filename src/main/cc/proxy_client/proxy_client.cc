@@ -173,8 +173,8 @@ string Trim(const string& cmd) {
   size_t st_idx = 0;
   size_t ed_idx = cmd.length() - 1;
 
-  while (st_idx <= ed_idx && !absl::ascii_isalpha(cmd[st_idx])) ++st_idx;
-  while (ed_idx > st_idx && !absl::ascii_isalpha(cmd[ed_idx])) --ed_idx;
+  while (st_idx <= ed_idx && !absl::ascii_isalnum(cmd[st_idx])) ++st_idx;
+  while (ed_idx > st_idx && !absl::ascii_isalnum(cmd[ed_idx])) --ed_idx;
 
   return cmd.substr(st_idx, ed_idx - st_idx + 1);
 }
@@ -202,6 +202,15 @@ void FindFiles(const string& cmd, set<string>* files) {
   // Ex: -Wl,--version-script,frameworks/rs/libRS.map
   if (cmd.find(",") != string::npos) {
     for (const auto& c : absl::StrSplit(cmd, ',', absl::SkipEmpty())) {
+      FindFiles(string(c), files);
+    }
+    return;
+  }
+  // Certain compile commands have compile options specified as
+  // -Wl,blacklist=foo/bar/blacklist.txt. So split by '=' as well
+  // and check if each component is a file or not.
+  if (cmd.find("=") != string::npos) {
+    for (const auto& c : absl::StrSplit(cmd, '=', absl::SkipEmpty())) {
       FindFiles(string(c), files);
     }
     return;
@@ -386,6 +395,7 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
       // Fall back on computing from the command, but warn.
       cerr << cmd_id << "> Include processor did not return results, computing from args\n";
     }
+    FindAllFilesFromCommand(argc, argv, inputs);
   } else if (is_header_abi_dumper) {
     use_args_inputs = true;
     *is_compile = true;
@@ -427,7 +437,6 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
   } else if (is_link) {
     use_args_inputs = true;
     inputs->insert("prebuilts/gcc");
-    inputs->insert("prebuilts/clang");
     FindAllFilesFromCommand(argc, argv, inputs);
     FindLibraryInputs(argc, argv, inputs);
   } else if (FLAGS_force_remote) {
@@ -446,6 +455,11 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
     inputs->insert(argv[argc-1]);  // For Android compile commands, the compiled file is last.
   } // Linker commands need special treatment as well.
 
+  if (is_assembler) {
+    // For now disable assemble compiles and just run them locally since they
+    // fail on AP@9 builds.
+    *is_compile = false;
+  }
   return 0;
 }
 
