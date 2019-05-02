@@ -869,10 +869,11 @@ public class RemoteClient {
   public RunRecord.Builder newFromCommandOptions(RunRemoteCommand options) {
     return newFromCommand(com.google.devtools.build.lib.remote.commands.Command.newBuilder()
         .setLabels(Labels.newBuilder()
-                .setCommandId(options.id)
-                .setBuildRequestId(options.buildRequestId)
-                .setInvocationId(options.invocationId)
-                .setToolName(options.toolName))
+            .setCommandId(options.id)
+            .setBuildRequestId(options.buildRequestId)
+            .setInvocationId(options.invocationId)
+            .setToolName(options.toolName)
+            .putAllLabels(options.labels))
         .setExecutionOptions(ExecutionOptions.newBuilder()
             .setWorkingDirectory(options.workingDirectory)
             .setAcceptCached(options.acceptCached)
@@ -969,7 +970,8 @@ public class RemoteClient {
     SliceOptions.Builder slice = SliceOptions.newBuilder()
         .setLabels(Labels.newBuilder()
             .setInvocationId(options.invocationId)
-            .setCommandId(options.commandId))
+            .setCommandId(options.commandId)
+            .putAllLabels(options.labels))
         .setStatus(options.status);
     if (options.fromTs > 0) {
       slice.setFromTs(Timestamp.newBuilder().setSeconds(options.fromTs));

@@ -37,6 +37,7 @@ import com.google.protobuf.util.Timestamps;
 import java.util.Comparator;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /** Utils to compute run time statistics on actions run by the proxy.*/
@@ -289,6 +290,12 @@ public class Stats {
     if (sliceOptions.getStatus() != Status.UNKNOWN &&
         rec.getResult().getStatus() != sliceOptions.getStatus()) {
       return false;
+    }
+    Map<String,String> cmdOtherLabels = cmdLabels.getLabels();
+    for (Map.Entry<String,String> e : labels.getLabels().entrySet()) {
+      if (!e.getValue().equals(cmdOtherLabels.get(e.getKey()))) {
+        return false;
+      }
     }
     return true;
   }

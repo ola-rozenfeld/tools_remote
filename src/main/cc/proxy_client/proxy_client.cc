@@ -58,6 +58,7 @@ DEFINE_string(inputs, "", "Comma-seperated list of input files/directories");
 DEFINE_string(outputs, "", "Comma-seperated list of output files");
 DEFINE_string(env_whitelist, "", "Comma-seperated list of environment variables to "
               "pass-through to the remote environment");
+DEFINE_string(labels, "", "Comma-seperated list of name=value pairs of command labels");
 
 static bool IsValidCommand(const char *flagname, const std::string &value) {
   return value == "run" || value == "list_includes" || value == "include_stats";
@@ -529,6 +530,13 @@ int CreateRunRequest(int argc, char** argv, const char** env,
   platform["container-image"] = "docker://gcr.io/foundry-x-experiments/android-platform@sha256:"
       "56e8072003914010c86702ef94634cdfde7089e4732ceac241d0fe4242957f90";
   platform["jdk-version"] = "10";
+  set<string> label_vals = absl::StrSplit(FLAGS_labels, ',', absl::SkipEmpty());
+  auto& cmd_labels = *(labels->mutable_labels());
+  for (const string& nameval : label_vals) {
+    unsigned int eq_index = nameval.find("=");
+    string name = nameval.substr(0, eq_index);
+    cmd_labels[name] = nameval.substr(eq_index+1);
+  }
   return 0;
 }
 

@@ -280,6 +280,13 @@ public final class RemoteClientOptions {
     public String id = "";
 
     @Parameter(
+        names = "--labels",
+        converter = MapConverter.class,
+        description = "Optional labels for identifying the command, formatted as a " +
+            "comma-separated list of <label_name>=value pairs.")
+    public Map<String,String> labels = new HashMap<>();
+
+    @Parameter(
         names = "--accept_cached",
         arity=1,
         description = "Whether to accept remotely cached action results.")
@@ -403,6 +410,13 @@ public final class RemoteClientOptions {
         description = "An action status to filter by.",
         converter = StatusConverter.class)
     public Status status = Status.UNKNOWN;
+
+    @Parameter(
+        names = "--labels",
+        converter = MapConverter.class,
+        description = "Optional command labels for slicing the stats, formatted as a " +
+            "comma-separated list of <label_name>=value pairs.")
+    public Map<String,String> labels = new HashMap<>();
 
     @Parameter(
         names = {"--proxy_stats_file", "-i"},
