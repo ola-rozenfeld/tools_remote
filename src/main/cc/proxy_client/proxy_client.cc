@@ -427,7 +427,6 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
   } else if (is_link) {
     use_args_inputs = true;
     inputs->insert("prebuilts/gcc");
-    inputs->insert("prebuilts/clang");
     FindAllFilesFromCommand(argc, argv, inputs);
     FindLibraryInputs(argc, argv, inputs);
   } else if (FLAGS_force_remote) {
