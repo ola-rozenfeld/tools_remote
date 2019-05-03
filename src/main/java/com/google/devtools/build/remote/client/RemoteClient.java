@@ -41,7 +41,7 @@ import com.google.devtools.build.lib.remote.commands.ExecutionOptions.LocalFallb
 import com.google.devtools.build.lib.remote.commands.Labels;
 import com.google.devtools.build.lib.remote.commands.RunRequest;
 import com.google.devtools.build.lib.remote.commands.RunResponse;
-import com.google.devtools.build.lib.remote.commands.RunResult;
+import com.google.devtools.build.lib.remote.commands.CommandResult;
 import com.google.devtools.build.lib.remote.stats.LocalTimestamps;
 import com.google.devtools.build.lib.remote.stats.RunRecord;
 import com.google.devtools.build.lib.remote.stats.RunRecord.Stage;
@@ -708,7 +708,7 @@ public class RemoteClient {
         proxyCmdStubs
             .get(proxyInstance)
             .runCommand(RunRequest.newBuilder().setCommand(record.getCommand()).build());
-    RunResult result = null;
+    CommandResult result = null;
     while (replies.hasNext()) {
       RunResponse resp = replies.next();
       if (!resp.getStdout().isEmpty()) {
@@ -722,8 +722,8 @@ public class RemoteClient {
       }
     } // Always read the entire stream.
     if (result == null) {
-      result = RunResult.newBuilder()
-          .setStatus(RunResult.Status.REMOTE_ERROR)
+      result = CommandResult.newBuilder()
+          .setStatus(CommandResult.Status.REMOTE_ERROR)
           .setExitCode(RemoteRunner.REMOTE_ERROR_EXIT_CODE)
           .setMessage("Remote client proxy failed to return a run result.")
           .build();
@@ -898,7 +898,7 @@ public class RemoteClient {
     } else {
       runRemoteProxy(record, outErr);
     }
-    RunResult result = record.getResult();
+    CommandResult result = record.getResult();
     switch (result.getStatus()) {
       case NON_ZERO_EXIT:
         outErr.printErrLn("Remote action FAILED with exit code " + result.getExitCode());

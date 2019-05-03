@@ -29,8 +29,8 @@ import com.google.devtools.build.lib.remote.commands.Command;
 import com.google.devtools.build.lib.remote.commands.ExecutionOptions;
 import com.google.devtools.build.lib.remote.commands.ExecutionOptions.LocalFallback;
 import com.google.devtools.build.lib.remote.commands.Labels;
-import com.google.devtools.build.lib.remote.commands.RunResult;
-import com.google.devtools.build.lib.remote.commands.RunResult.Status;
+import com.google.devtools.build.lib.remote.commands.CommandResult;
+import com.google.devtools.build.lib.remote.commands.CommandResult.Status;
 import com.google.devtools.build.lib.remote.stats.ExecutionData;
 import com.google.devtools.build.lib.remote.stats.LocalTimestamps;
 import com.google.devtools.build.lib.remote.stats.RunRecord;
@@ -146,7 +146,7 @@ public class RemoteRunner {
     return action.build();
   }
 
-  private RunResult.Builder downloadRemoteResults(
+  private CommandResult.Builder downloadRemoteResults(
       ActionResult result, OutErr outErr, RunRecord.Builder record)
       throws IOException, InterruptedException {
     cache.download(result, execRoot, outErr, record);
@@ -164,7 +164,7 @@ public class RemoteRunner {
         execData.addOutputFilesBuilder().setPath(o.getPath()).setDigest(o.getDigest());
       }
     }
-    return RunResult.newBuilder()
+    return CommandResult.newBuilder()
         .setStatus(exitCode == 0 ? Status.SUCCESS : Status.NON_ZERO_EXIT)
         .setExitCode(exitCode);
   }
@@ -199,7 +199,7 @@ public class RemoteRunner {
     }
   }
 
-  private RunResult handleError(
+  private CommandResult handleError(
       IOException exception, OutErr outErr, ActionKey actionKey, Path logDir,
       RunRecord.Builder record) throws InterruptedException {
     // Regardless of cause, if we are interrupted, we should stop without displaying a user-visible
@@ -223,13 +223,13 @@ public class RemoteRunner {
         }
       }
       if (e.isExecutionTimeout()) {
-        return RunResult.newBuilder()
+        return CommandResult.newBuilder()
             .setStatus(Status.TIMEOUT)
             .setExitCode(TIMEOUT_EXIT_CODE)
             .build();
       }
     }
-    return RunResult.newBuilder()
+    return CommandResult.newBuilder()
         .setStatus(Status.REMOTE_ERROR)
         .setExitCode(REMOTE_ERROR_EXIT_CODE)
         .setMessage(exceptionMessage(exception))
@@ -338,7 +338,7 @@ public class RemoteRunner {
     } catch (Exception e) {
       nextStage(Stage.FINISHED, record);
       record.setResult(
-          RunResult.newBuilder()
+          CommandResult.newBuilder()
               .setStatus(Status.REMOTE_ERROR)
               .setExitCode(LOCAL_ERROR_EXIT_CODE)
               .setMessage(exceptionMessage(e)));
@@ -396,7 +396,7 @@ public class RemoteRunner {
           Utils.vlog(
               remoteOptions.verbosity, 2, "%s> Found cached result, downloading outputs...", id);
           nextStage(Stage.DOWNLOADING_OUTPUTS, record);
-          RunResult.Builder result = downloadRemoteResults(cachedResult, outErr, record);
+          CommandResult.Builder result = downloadRemoteResults(cachedResult, outErr, record);
           record.setResult(result.setStatus(Status.CACHE_HIT));
           return;
         } catch (CacheNotFoundException e) {
@@ -437,7 +437,7 @@ public class RemoteRunner {
                   Utils.vlog(remoteOptions.verbosity, 2, "%s> Downloading outputs...", id);
                   maybeDownloadServerLogs(reply, actionKey, logDir, outErr);
                   ActionResult res = reply.getResult();
-                  RunResult.Builder result = downloadRemoteResults(res, outErr, record);
+                  CommandResult.Builder result = downloadRemoteResults(res, outErr, record);
                   if (res.hasExecutionMetadata()) {
                     record.setRemoteMetadata(res.getExecutionMetadata());
                   }
@@ -452,10 +452,10 @@ public class RemoteRunner {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       record.setResult(
-          RunResult.newBuilder().setStatus(Status.INTERRUPTED).setExitCode(INTERRUPTED_EXIT_CODE));
+          CommandResult.newBuilder().setStatus(Status.INTERRUPTED).setExitCode(INTERRUPTED_EXIT_CODE));
     } catch (Exception e) {
       record.setResult(
-          RunResult.newBuilder()
+          CommandResult.newBuilder()
               .setStatus(Status.REMOTE_ERROR)
               .setExitCode(REMOTE_ERROR_EXIT_CODE)
               .setMessage(exceptionMessage(e)));
@@ -493,7 +493,7 @@ public class RemoteRunner {
       }
     } catch (Exception e) {
       record.setResult(
-          RunResult.newBuilder()
+          CommandResult.newBuilder()
               .setStatus(Status.LOCAL_ERROR)
               .setExitCode(LOCAL_ERROR_EXIT_CODE)
               .setMessage(exceptionMessage(e)));

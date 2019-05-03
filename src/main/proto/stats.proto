@@ -70,7 +70,7 @@ message SliceOptions {
   Labels labels = 5;
 
   // Finished records having this run status.
-  RunResult.Status status = 6;
+  CommandResult.Status status = 6;
 }
 
 // Statistics of all proxy executions at a given time.
@@ -78,7 +78,7 @@ message ProxyStats {
   // Finished records grouped by status.
   message StatByStatus {
     // Execution status.
-    RunResult.Status status = 1;
+    CommandResult.Status status = 1;
 
     // Number of records having this status.
     int32 count = 2;
@@ -240,7 +240,7 @@ message RunRecord {
   Command command = 2;
 
   // Result, if available.
-  RunResult result = 3;
+  CommandResult result = 3;
 
   // Properties of the action.
   ActionMetadata action_metadata = 4;
@@ -253,7 +253,7 @@ message RunRecord {
   build.bazel.remote.execution.v2.ExecutedActionMetadata remote_metadata = 6;
 
   // Saved failed remote result, before local re-execution.
-  RunResult result_before_local_fallback = 7;
+  CommandResult result_before_local_fallback = 7;
 
   // Full execution data, if available (not saved by default).
   ExecutionData execution_data = 8;

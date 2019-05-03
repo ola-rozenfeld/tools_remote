@@ -25,7 +25,7 @@ import com.beust.jcommander.converters.PathConverter;
 import com.beust.jcommander.converters.IParameterSplitter;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.remote.commands.ExecutionOptions.LocalFallback;
-import com.google.devtools.build.lib.remote.commands.RunResult.Status;
+import com.google.devtools.build.lib.remote.commands.CommandResult.Status;
 import com.google.devtools.build.remote.client.util.DigestUtil;
 import java.io.File;
 import java.nio.file.Path;

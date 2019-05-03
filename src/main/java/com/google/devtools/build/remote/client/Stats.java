@@ -15,8 +15,8 @@ package com.google.devtools.build.remote.client;
 
 import build.bazel.remote.execution.v2.ExecutedActionMetadata;
 import com.google.devtools.build.lib.remote.commands.Labels;
-import com.google.devtools.build.lib.remote.commands.RunResult;
-import com.google.devtools.build.lib.remote.commands.RunResult.Status;
+import com.google.devtools.build.lib.remote.commands.CommandResult;
+import com.google.devtools.build.lib.remote.commands.CommandResult.Status;
 import com.google.devtools.build.lib.remote.stats.ActionMetadata;
 import com.google.devtools.build.lib.remote.stats.ActionStats;
 import com.google.devtools.build.lib.remote.stats.LocalExecutionStats;

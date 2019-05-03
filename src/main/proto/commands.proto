@@ -46,7 +46,7 @@ message RunResponse {
   string stderr = 2;
 
   // Result of the command execution.
-  RunResult result = 3;
+  CommandResult result = 3;
 }
 
 // The command to be executed remotely.
@@ -137,7 +137,7 @@ message ExecutionOptions {
 }
 
 // Result of a command execution returned by the proxy.
-message RunResult {
+message CommandResult {
   enum Status {
     UNKNOWN = 0;
     SUCCESS = 1;

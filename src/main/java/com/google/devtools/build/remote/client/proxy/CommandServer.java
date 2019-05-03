@@ -18,7 +18,7 @@ import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.google.devtools.build.lib.remote.commands.RunResult.Status;
+import com.google.devtools.build.lib.remote.commands.CommandResult.Status;
 import com.google.devtools.build.lib.remote.commands.RunRequest;
 import com.google.devtools.build.lib.remote.commands.RunResponse;
 import com.google.devtools.build.lib.remote.commands.CommandsGrpc.CommandsImplBase;
