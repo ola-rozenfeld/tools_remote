@@ -569,7 +569,7 @@ int ExecuteRemotely(const RunRequest& req) {
       cerr << resp.stderr();
     }
     if (resp.has_result()) {
-      RunResult result = resp.result();
+      CommandResult result = resp.result();
       if (!reader->Finish().ok()) {
         cerr << "Error finishing read from remote client proxy.\n";
         return 33;
