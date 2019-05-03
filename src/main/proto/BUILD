@@ -23,21 +23,39 @@ java_proto_library(
 )
 
 proto_library(
-    name = "command_server_proto",
-    srcs = ["command_server.proto"],
+    name = "commands_proto",
+    srcs = ["commands.proto"],
+)
+
+proto_library(
+    name = "stats_proto",
+    srcs = ["stats.proto"],
     deps = [
+        ":commands_proto",
         "@com_google_protobuf//:timestamp_proto",
         "@remoteapis//build/bazel/remote/execution/v2:remote_execution_proto",
     ],
 )
 
 cc_grpc_library(
-    name = "command_server_cc_proto",
-    srcs = ["command_server.proto"],
+    name = "commands_cc_proto",
+    srcs = ["commands.proto"],
     proto_only = False,
     use_external = False,
     well_known_protos = True,
-    deps = ["@remoteapis//build/bazel/remote/execution/v2:remote_execution_cc_proto"],
+    deps = [],
+)
+
+cc_grpc_library(
+    name = "stats_cc_proto",
+    srcs = ["stats.proto"],
+    proto_only = False,
+    use_external = False,
+    well_known_protos = True,
+    deps = [
+        ":commands_cc_proto",
+        "@remoteapis//build/bazel/remote/execution/v2:remote_execution_cc_proto",
+    ],
 )
 
 cc_grpc_library(
@@ -50,12 +68,23 @@ cc_grpc_library(
 )
 
 java_proto_library(
-    name = "command_server_java_proto",
-    deps = [":command_server_proto"],
+    name = "commands_java_proto",
+    deps = [":commands_proto"],
+)
+
+java_proto_library(
+    name = "stats_java_proto",
+    deps = [":stats_proto"],
 )
 
 java_grpc_library(
-    name = "command_server_java_grpc",
-    srcs = [":command_server_proto"],
-    deps = [":command_server_java_proto"],
+    name = "commands_java_grpc",
+    srcs = [":commands_proto"],
+    deps = [":commands_java_proto"],
+)
+
+java_grpc_library(
+    name = "stats_java_grpc",
+    srcs = [":stats_proto"],
+    deps = [":stats_java_proto"],
 )

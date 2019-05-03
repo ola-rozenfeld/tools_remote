@@ -21,8 +21,10 @@ java_library(
         "//3rdparty/jvm/io/netty:netty_all",
         "//src/main/java/com/google/devtools/build/remote/client",
         "//src/main/java/com/google/devtools/build/remote/client/util",
-        "//src/main/proto:command_server_java_grpc",
-        "//src/main/proto:command_server_java_proto",
+        "//src/main/proto:commands_java_grpc",
+        "//src/main/proto:commands_java_proto",
+        "//src/main/proto:stats_java_grpc",
+        "//src/main/proto:stats_java_proto",
         "@remoteapis//build/bazel/remote/execution/v2:remote_execution_java_proto",
     ],
 )

@@ -18,7 +18,6 @@ import static com.google.devtools.build.remote.client.util.Utils.getFromFuture;
 
 import build.bazel.remote.execution.v2.Action;
 import build.bazel.remote.execution.v2.ActionResult;
-import build.bazel.remote.execution.v2.Command;
 import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.ExecuteRequest;
 import build.bazel.remote.execution.v2.ExecuteResponse;
@@ -26,12 +25,16 @@ import build.bazel.remote.execution.v2.LogFile;
 import build.bazel.remote.execution.v2.OutputFile;
 import build.bazel.remote.execution.v2.Platform;
 import com.google.common.base.Throwables;
-import com.google.devtools.build.lib.remote.proxy.ExecutionData;
-import com.google.devtools.build.lib.remote.proxy.LocalTimestamps;
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
-import com.google.devtools.build.lib.remote.proxy.RunRecord.Stage;
-import com.google.devtools.build.lib.remote.proxy.RunResult;
-import com.google.devtools.build.lib.remote.proxy.RunResult.Status;
+import com.google.devtools.build.lib.remote.commands.Command;
+import com.google.devtools.build.lib.remote.commands.ExecutionOptions;
+import com.google.devtools.build.lib.remote.commands.ExecutionOptions.LocalFallback;
+import com.google.devtools.build.lib.remote.commands.Labels;
+import com.google.devtools.build.lib.remote.commands.CommandResult;
+import com.google.devtools.build.lib.remote.commands.CommandResult.Status;
+import com.google.devtools.build.lib.remote.stats.ExecutionData;
+import com.google.devtools.build.lib.remote.stats.LocalTimestamps;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
+import com.google.devtools.build.lib.remote.stats.RunRecord.Stage;
 import com.google.devtools.build.remote.client.LogParserUtils.ParamException;
 import com.google.devtools.build.remote.client.RemoteClientOptions.RunRemoteCommand;
 import com.google.devtools.build.remote.client.TreeNodeRepository.NodeStats;
@@ -48,6 +51,7 @@ import io.grpc.Status.Code;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Map;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
@@ -60,7 +64,6 @@ public class RemoteRunner {
   public static final int INTERRUPTED_EXIT_CODE = 8;
 
   private final RemoteOptions remoteOptions;
-  private RemoteClientOptions clientOptions;
   private final Path execRoot;
   private final DigestUtil digestUtil;
   private final GrpcRemoteCache cache;
@@ -78,7 +81,6 @@ public class RemoteRunner {
       GrpcRemoteExecutor executor,
       Clock clock) {
     this.remoteOptions = remoteOptions;
-    this.clientOptions = clientOptions;
     this.execRoot = remoteOptions.execRoot.toAbsolutePath();
     this.digestUtil = digestUtil;
     this.cache = cache;
@@ -90,83 +92,79 @@ public class RemoteRunner {
         new TreeNodeRepository(execRoot, inputFileCache, digestUtil, clientOptions.dynamicInputs);
   }
 
-  private static Command buildCommand(RunRemoteCommand options) throws ParamException {
-    Command.Builder command = Command.newBuilder();
+  private static build.bazel.remote.execution.v2.Command buildRemoteCommand(Command command)
+      throws ParamException {
+    build.bazel.remote.execution.v2.Command.Builder result =
+        build.bazel.remote.execution.v2.Command.newBuilder();
 
-    if (options.outputFiles != null) {
-      command.addAllOutputFiles(
-          options.outputFiles.stream().map(Path::toString).sorted().collect(Collectors.toList()));
-    }
-    if (options.outputDirectories != null) {
-      command.addAllOutputDirectories(
-          options.outputDirectories.stream()
-              .map(Path::toString)
-              .sorted()
-              .collect(Collectors.toList()));
-    }
+    result.addAllOutputFiles(
+        command.getOutputFilesList().stream().sorted().collect(Collectors.toList()));
+    result.addAllOutputDirectories(
+        command.getOutputDirectoriesList().stream()
+            .sorted()
+            .collect(Collectors.toList()));
 
-    if (options.command == null || options.command.isEmpty()) {
+    if (command.getArgsCount() == 0) {
       throw new ParamException("At least one command line argument should be specified.");
     }
-    command.addAllArguments(options.command);
+    result.addAllArguments(command.getArgsList());
 
-    if (options.platform == null || options.platform.isEmpty()) {
+    ExecutionOptions execOptions = command.getExecutionOptions();
+    Map<String,String> inputPlatform = execOptions.getPlatform();
+    if (inputPlatform.isEmpty()) {
       throw new ParamException("A platform should be specified.");
     }
-    TreeSet<String> platformEntries = new TreeSet<>(options.platform.keySet());
+    TreeSet<String> platformEntries = new TreeSet<>(inputPlatform.keySet());
     Platform.Builder platform = Platform.newBuilder();
     for (String var : platformEntries) {
-      platform.addPropertiesBuilder().setName(var).setValue(options.platform.get(var));
+      platform.addPropertiesBuilder().setName(var).setValue(inputPlatform.get(var));
     }
-    command.setPlatform(platform.build());
+    result.setPlatform(platform.build());
 
     // Sorting the environment pairs by variable name.
-    if (options.environmentVariables != null) {
-      TreeSet<String> variables = new TreeSet<>(options.environmentVariables.keySet());
+    Map<String,String> env = execOptions.getEnvironmentVariables();
+    if (!env.isEmpty()) {
+      TreeSet<String> variables = new TreeSet<>(env.keySet());
       for (String var : variables) {
-        command
-            .addEnvironmentVariablesBuilder()
-            .setName(var)
-            .setValue(options.environmentVariables.get(var));
+        result.addEnvironmentVariablesBuilder().setName(var).setValue(env.get(var));
       }
     }
-    command.setWorkingDirectory(options.workingDirectory);
-    return command.build();
+    result.setWorkingDirectory(execOptions.getWorkingDirectory());
+    return result.build();
   }
 
   private static Action buildAction(
-      Digest command, Digest inputRoot, int timeoutSeconds, boolean cacheable) {
-    Action.Builder action = Action.newBuilder();
-    action.setCommandDigest(command);
-    action.setInputRootDigest(inputRoot);
+      Digest cmdDigest, Digest inputRoot, ExecutionOptions execOptions) {
+    Action.Builder action = Action.newBuilder()
+        .setCommandDigest(cmdDigest)
+        .setInputRootDigest(inputRoot)
+        .setDoNotCache(execOptions.getDoNotCache());
+    int timeoutSeconds = execOptions.getExecutionTimeout();
     if (timeoutSeconds > 0) {
       action.setTimeout(Duration.newBuilder().setSeconds(timeoutSeconds));
-    }
-    if (!cacheable) {
-      action.setDoNotCache(true);
     }
     return action.build();
   }
 
-  private RunResult.Builder downloadRemoteResults(
-      ActionResult result, OutErr outErr, RunRemoteCommand options, RunRecord.Builder record)
+  private CommandResult.Builder downloadRemoteResults(
+      ActionResult result, OutErr outErr, RunRecord.Builder record)
       throws IOException, InterruptedException {
     cache.download(result, execRoot, outErr, record);
     Utils.vlog(
         remoteOptions.verbosity,
         2,
         "%s> Number of outputs: %d, total bytes: %d",
-        record.getCommandParameters().getName(),
+        record.getCommand().getLabels().getCommandId(),
         record.getActionMetadata().getNumOutputs(),
         record.getActionMetadata().getTotalOutputBytes());
     int exitCode = result.getExitCode();
-    if (options.saveExecutionData) {
+    if (record.getCommand().getExecutionOptions().getSaveExecutionData()) {
       ExecutionData.Builder execData = record.getExecutionDataBuilder();
       for (OutputFile o : result.getOutputFilesList()) {
         execData.addOutputFilesBuilder().setPath(o.getPath()).setDigest(o.getDigest());
       }
     }
-    return RunResult.newBuilder()
+    return CommandResult.newBuilder()
         .setStatus(exitCode == 0 ? Status.SUCCESS : Status.NON_ZERO_EXIT)
         .setExitCode(exitCode);
   }
@@ -201,7 +199,7 @@ public class RemoteRunner {
     }
   }
 
-  private RunResult handleError(
+  private CommandResult handleError(
       IOException exception, OutErr outErr, ActionKey actionKey, Path logDir,
       RunRecord.Builder record) throws InterruptedException {
     // Regardless of cause, if we are interrupted, we should stop without displaying a user-visible
@@ -225,13 +223,13 @@ public class RemoteRunner {
         }
       }
       if (e.isExecutionTimeout()) {
-        return RunResult.newBuilder()
+        return CommandResult.newBuilder()
             .setStatus(Status.TIMEOUT)
             .setExitCode(TIMEOUT_EXIT_CODE)
             .build();
       }
     }
-    return RunResult.newBuilder()
+    return CommandResult.newBuilder()
         .setStatus(Status.REMOTE_ERROR)
         .setExitCode(REMOTE_ERROR_EXIT_CODE)
         .setMessage(exceptionMessage(exception))
@@ -313,39 +311,34 @@ public class RemoteRunner {
   }
 
   // Runs remotely, no local fallback.
-  public void runRemoteOnly(RunRemoteCommand options, OutErr outErr, RunRecord.Builder record) {
-    String name = record.getCommandParameters().getName();
+  public void runRemoteOnly(RunRecord.Builder record, OutErr outErr) {
+    Command command = record.getCommand();
+    Labels labels = command.getLabels();
+    ExecutionOptions execOptions = command.getExecutionOptions();
+    String id = labels.getCommandId();
     Utils.vlog(
-        remoteOptions.verbosity, 2, "%s> Build request ID: %s", name, options.buildRequestId);
-    Utils.vlog(remoteOptions.verbosity, 2, "%s> Invocation ID: %s", name, options.invocationId);
-    if (options.saveExecutionData) {
-      // Instead of injecting options downstream, create an empty ExecutionData to indicate we
-      // want to save this. TODO(olaola): reconsider this hack!
-      record.setExecutionData(ExecutionData.getDefaultInstance());
-    }
+        remoteOptions.verbosity, 2, "%s> Build request ID: %s", id, labels.getBuildRequestId());
+    Utils.vlog(remoteOptions.verbosity, 2, "%s> Invocation ID: %s", id, labels.getInvocationId());
     TreeNode inputRoot;
-    Command command;
+    build.bazel.remote.execution.v2.Command reCmd;
     Action action;
     Digest cmdDigest;
     try {
-      command = buildCommand(options);
+      reCmd = buildRemoteCommand(command);
       nextStage(Stage.COMPUTING_INPUT_TREE, record);
-      Utils.vlog(remoteOptions.verbosity, 2, "%s> Command: \n%s", name, command);
-      Utils.vlog(remoteOptions.verbosity, 2, "%s> Computing input Merkle tree...", name);
-      inputRoot = treeNodeRepository.buildFromFiles(options.inputs, options.ignoreInputs);
+      Utils.vlog(remoteOptions.verbosity, 2, "%s> Command: \n%s", id, reCmd);
+      Utils.vlog(remoteOptions.verbosity, 2, "%s> Computing input Merkle tree...", id);
+      inputRoot = treeNodeRepository.buildFromFiles(
+          command.getInputsList().stream().map(Paths::get).collect(Collectors.toList()),
+          command.getIgnoreInputsList());
       treeNodeRepository.computeMerkleDigests(inputRoot);
-      cmdDigest = digestUtil.compute(command);
-      action =
-          buildAction(
-              cmdDigest,
-              treeNodeRepository.getMerkleDigest(inputRoot),
-              options.executionTimeout,
-              !options.doNotCache);
-      Utils.vlog(remoteOptions.verbosity, 2, "%s> Action: \n%s", name, action);
+      cmdDigest = digestUtil.compute(reCmd);
+      action = buildAction(cmdDigest, treeNodeRepository.getMerkleDigest(inputRoot), execOptions);
+      Utils.vlog(remoteOptions.verbosity, 2, "%s> Action: \n%s", id, action);
     } catch (Exception e) {
       nextStage(Stage.FINISHED, record);
       record.setResult(
-          RunResult.newBuilder()
+          CommandResult.newBuilder()
               .setStatus(Status.REMOTE_ERROR)
               .setExitCode(LOCAL_ERROR_EXIT_CODE)
               .setMessage(exceptionMessage(e)));
@@ -357,7 +350,7 @@ public class RemoteRunner {
         remoteOptions.verbosity,
         2,
         "%s> Action ID: %s",
-        name,
+        id,
         digestUtil.toString(actionKey.getDigest()));
     // Stats computation:
     NodeStats stats = treeNodeRepository.getStats(inputRoot);
@@ -370,7 +363,7 @@ public class RemoteRunner {
         remoteOptions.verbosity,
         2,
         "%s> Number of inputs: %d, total bytes: %d",
-        name,
+        id,
         numInputs,
         totalInputBytes);
     record
@@ -379,16 +372,16 @@ public class RemoteRunner {
         .setTotalInputBytes(totalInputBytes);
     Context withMetadata =
         TracingMetadataUtils.contextWithMetadata(
-            options.buildRequestId, options.invocationId, actionKey);
+            labels.getBuildRequestId(), labels.getInvocationId(), actionKey, labels.getToolName());
     Context previous = withMetadata.attach();
     try {
-      if (options.saveExecutionData) {
+      if (execOptions.getSaveExecutionData()) {
         ExecutionData.Builder execData = record.getExecutionDataBuilder();
         treeNodeRepository.saveInputData(inputRoot, execData);
         execData.setCommandDigest(cmdDigest);
         execData.setActionDigest(actionKey.getDigest());
       }
-      boolean acceptCachedResult = options.acceptCached && !options.doNotCache;
+      boolean acceptCachedResult = execOptions.getAcceptCached() && !execOptions.getDoNotCache();
       ActionResult cachedResult =
           acceptCachedResult ? cache.getCachedActionResult(actionKey) : null;
       if (cachedResult != null) {
@@ -401,9 +394,9 @@ public class RemoteRunner {
         }
         try {
           Utils.vlog(
-              remoteOptions.verbosity, 2, "%s> Found cached result, downloading outputs...", name);
+              remoteOptions.verbosity, 2, "%s> Found cached result, downloading outputs...", id);
           nextStage(Stage.DOWNLOADING_OUTPUTS, record);
-          RunResult.Builder result = downloadRemoteResults(cachedResult, outErr, options, record);
+          CommandResult.Builder result = downloadRemoteResults(cachedResult, outErr, record);
           record.setResult(result.setStatus(Status.CACHE_HIT));
           return;
         } catch (CacheNotFoundException e) {
@@ -418,21 +411,21 @@ public class RemoteRunner {
               .setActionDigest(actionKey.getDigest())
               .setSkipCacheLookup(!acceptCachedResult)
               .build();
+      Path logDir = Paths.get(execOptions.getServerLogsPath());
       try {
         record.setResult(
             retrier.execute(
                 () -> {
-                  Utils.vlog(remoteOptions.verbosity, 2, "%s> Checking inputs to upload...", name);
+                  Utils.vlog(remoteOptions.verbosity, 2, "%s> Checking inputs to upload...", id);
                   nextStage(Stage.UPLOADING_INPUTS, record);
-                  cache.ensureInputsPresent(
-                      treeNodeRepository, execRoot, inputRoot, action, command, record);
+                  cache.ensureInputsPresent(treeNodeRepository, inputRoot, action, reCmd, record);
                   nextStage(Stage.EXECUTING, record);
                   Utils.vlog(
                       remoteOptions.verbosity,
                       2,
                       "%s> Executing remotely:\n%s",
-                      name,
-                      String.join(" ", options.command));
+                      id,
+                      String.join(" ", command.getArgsList()));
                   ExecuteResponse reply = executor.executeRemotely(request);
                   String message = reply.getMessage();
                   if ((reply.getResult().getExitCode() != 0
@@ -441,12 +434,12 @@ public class RemoteRunner {
                     outErr.printErrLn(message);
                   }
                   nextStage(Stage.DOWNLOADING_OUTPUTS, record);
-                  Utils.vlog(remoteOptions.verbosity, 2, "%s> Downloading outputs...", name);
-                  maybeDownloadServerLogs(reply, actionKey, options.serverLogsPath, outErr);
+                  Utils.vlog(remoteOptions.verbosity, 2, "%s> Downloading outputs...", id);
+                  maybeDownloadServerLogs(reply, actionKey, logDir, outErr);
                   ActionResult res = reply.getResult();
-                  RunResult.Builder result = downloadRemoteResults(res, outErr, options, record);
+                  CommandResult.Builder result = downloadRemoteResults(res, outErr, record);
                   if (res.hasExecutionMetadata()) {
-                    result.setMetadata(res.getExecutionMetadata());
+                    record.setRemoteMetadata(res.getExecutionMetadata());
                   }
                   if (reply.getCachedResult()) {
                     result.setStatus(Status.CACHE_HIT);
@@ -454,34 +447,37 @@ public class RemoteRunner {
                   return result.build();
                 }));
       } catch (IOException e) {
-        record.setResult(handleError(e, outErr, actionKey, options.serverLogsPath, record));
+        record.setResult(handleError(e, outErr, actionKey, logDir, record));
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       record.setResult(
-          RunResult.newBuilder().setStatus(Status.INTERRUPTED).setExitCode(INTERRUPTED_EXIT_CODE));
+          CommandResult.newBuilder().setStatus(Status.INTERRUPTED).setExitCode(INTERRUPTED_EXIT_CODE));
     } catch (Exception e) {
       record.setResult(
-          RunResult.newBuilder()
+          CommandResult.newBuilder()
               .setStatus(Status.REMOTE_ERROR)
               .setExitCode(REMOTE_ERROR_EXIT_CODE)
               .setMessage(exceptionMessage(e)));
     } finally {
       nextStage(Stage.FINISHED, record);
-      Utils.vlog(remoteOptions.verbosity, 2, "%s> Done.", name);
+      Utils.vlog(remoteOptions.verbosity, 2, "%s> Done.", id);
       withMetadata.detach(previous);
     }
   }
 
-  public void runRemote(RunRemoteCommand options, OutErr outErr, RunRecord.Builder record) {
-    runRemoteOnly(options, outErr, record);
+  public void runRemote(RunRecord.Builder record, OutErr outErr) {
+    runRemoteOnly(record, outErr);
+    Command command = record.getCommand();
+    ExecutionOptions execOptions = command.getExecutionOptions();
     Status status = record.getResult().getStatus();
-    if (!isFailureStatus(status) || !options.localFallback || status == Status.TIMEOUT) {
+    if (execOptions.getLocalFallback().equals(LocalFallback.NONE) || !isFailureStatus(status) ||
+        status == Status.TIMEOUT) {
       return;
     }
     // Execute the action locally.
-    String name = record.getCommandParameters().getName();
-    Utils.vlog(remoteOptions.verbosity, 2, "%s> Falling back to local execution... %s", name);
+    String id = command.getLabels().getCommandId();
+    Utils.vlog(remoteOptions.verbosity, 2, "%s> Falling back to local execution... %s", id);
     record.setStage(Stage.LOCAL_FALLBACK_EXECUTING);
     record.setResultBeforeLocalFallback(record.getResult());
     record.clearResult();
@@ -489,21 +485,21 @@ public class RemoteRunner {
     // TODO(olaola): fall back to docker.
     try {
       // Set up the local directory.
-      for (Path path : options.outputDirectories) {
-        Files.createDirectories(path);
+      for (String path : command.getOutputDirectoriesList()) {
+        Files.createDirectories(Paths.get(path));
       }
-      for (Path path : options.outputFiles) {
-        Files.createDirectories(path.getParent());
+      for (String path : command.getOutputFilesList()) {
+        Files.createDirectories(Paths.get(path).getParent());
       }
     } catch (Exception e) {
       record.setResult(
-          RunResult.newBuilder()
+          CommandResult.newBuilder()
               .setStatus(Status.LOCAL_ERROR)
               .setExitCode(LOCAL_ERROR_EXIT_CODE)
               .setMessage(exceptionMessage(e)));
     } finally {
       record.setStage(Stage.FINISHED);
-      Utils.vlog(remoteOptions.verbosity, 2, "%s> Done local fallback.", name);
+      Utils.vlog(remoteOptions.verbosity, 2, "%s> Done local fallback.", id);
     }
   }
 }

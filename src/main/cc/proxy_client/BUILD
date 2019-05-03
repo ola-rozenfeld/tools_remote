@@ -1,22 +1,22 @@
 cc_library(
     name = "proxy_client_lib",
     srcs = [
-        "proxy_client.cc",
+        "common_utils.cc",
         "javac_remote_actions.cc",
         "link_command_inputs.cc",
-        "common_utils.cc",
+        "proxy_client.cc",
     ],
     hdrs = [
-        "proxy_client.h",
+        "common_utils.h",
         "javac_remote_actions.h",
         "link_command_inputs.h",
-        "common_utils.h",
+        "proxy_client.h",
     ],
     deps = [
-        "//external:grpc++",
         "//external:gflags",
+        "//external:grpc++",
         "//src/main/cc/ipc:goma_ipc_lib",
-        "//src/main/proto:command_server_cc_proto",
+        "//src/main/proto:commands_cc_proto",
         "//src/main/proto:include_processor_cc_proto",
         "@com_google_absl//absl/strings",
     ],

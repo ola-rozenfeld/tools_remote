@@ -34,19 +34,22 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.hash.Hashing;
 import com.google.common.io.Files;
-import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc;
-import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc.CommandServiceBlockingStub;
-import com.google.devtools.build.lib.remote.proxy.FetchRecordRequest;
-import com.google.devtools.build.lib.remote.proxy.FetchRecordResponse;
-import com.google.devtools.build.lib.remote.proxy.LocalTimestamps;
-import com.google.devtools.build.lib.remote.proxy.RunCommandParameters;
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
-import com.google.devtools.build.lib.remote.proxy.RunRecord.Stage;
-import com.google.devtools.build.lib.remote.proxy.RunRequest;
-import com.google.devtools.build.lib.remote.proxy.RunResponse;
-import com.google.devtools.build.lib.remote.proxy.RunResult;
-import com.google.devtools.build.lib.remote.proxy.StatsRequest;
-import com.google.devtools.build.lib.remote.proxy.StatsResponse;
+import com.google.devtools.build.lib.remote.commands.CommandsGrpc;
+import com.google.devtools.build.lib.remote.commands.CommandsGrpc.CommandsBlockingStub;
+import com.google.devtools.build.lib.remote.commands.ExecutionOptions;
+import com.google.devtools.build.lib.remote.commands.ExecutionOptions.LocalFallback;
+import com.google.devtools.build.lib.remote.commands.Labels;
+import com.google.devtools.build.lib.remote.commands.RunRequest;
+import com.google.devtools.build.lib.remote.commands.RunResponse;
+import com.google.devtools.build.lib.remote.commands.CommandResult;
+import com.google.devtools.build.lib.remote.stats.LocalTimestamps;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
+import com.google.devtools.build.lib.remote.stats.RunRecord.Stage;
+import com.google.devtools.build.lib.remote.stats.SliceOptions;
+import com.google.devtools.build.lib.remote.stats.StatsGrpc;
+import com.google.devtools.build.lib.remote.stats.StatsGrpc.StatsBlockingStub;
+import com.google.devtools.build.lib.remote.stats.StatsRequest;
+import com.google.devtools.build.lib.remote.stats.StatsResponse;
 import com.google.devtools.build.remote.client.LogParserUtils.ParamException;
 import com.google.devtools.build.remote.client.RemoteClientOptions.CatCommand;
 import com.google.devtools.build.remote.client.RemoteClientOptions.FailedActionsCommand;
@@ -109,7 +112,8 @@ public class RemoteClient {
   private RemoteOptions remoteOptions;
   private AuthAndTLSOptions authAndTlsOptions;
   private List<String> proxyTargets;
-  private List<CommandServiceBlockingStub> proxyStubs;
+  private List<CommandsBlockingStub> proxyCmdStubs;
+  private List<StatsBlockingStub> proxyStatStubs;
   private Random rand = new Random();
 
   public RemoteClient(
@@ -126,7 +130,8 @@ public class RemoteClient {
     if (!Strings.isNullOrEmpty(clientOptions.proxy)) {
       // Initialize proxy channels and stubs.
       proxyTargets = new ArrayList<>();
-      proxyStubs = new ArrayList<>();
+      proxyCmdStubs = new ArrayList<>();
+      proxyStatStubs = new ArrayList<>();
       for (int i = 0; i < clientOptions.proxyInstances; ++i) {
         String[] parts = clientOptions.proxy.split(":");
         Preconditions.checkArgument(parts.length == 2, "--proxy should be HOST:PORT");
@@ -134,8 +139,10 @@ public class RemoteClient {
         proxyTargets.add(target);
         ManagedChannel channel = GoogleAuthUtils.newChannel(target, authAndTlsOptions);
         CallCredentials credentials = GoogleAuthUtils.newCallCredentials(authAndTlsOptions);
-        proxyStubs.add(
-            CommandServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials));
+        proxyCmdStubs.add(
+            CommandsGrpc.newBlockingStub(channel).withCallCredentials(credentials));
+        proxyStatStubs.add(
+            StatsGrpc.newBlockingStub(channel).withCallCredentials(credentials));
       }
       return;
     }
@@ -143,7 +150,8 @@ public class RemoteClient {
       return;
     }
     List<ClientInterceptor> interceptors = new ArrayList<>();
-    if (!Strings.isNullOrEmpty(clientOptions.grpcLog)) {
+    if (!Strings.isNullOrEmpty(clientOptions.grpcLog) &&
+        Strings.isNullOrEmpty(clientOptions.proxy)) {
       rpcLogFile = new AsynchronousFileOutputStream(clientOptions.grpcLog);
       interceptors.add(new LoggingInterceptor(rpcLogFile, clock));
     }
@@ -688,19 +696,19 @@ public class RemoteClient {
     }
   }
 
-  private RunResult runRemoteProxy(RunRemoteCommand options, OutErr outErr, String... args) {
-    Preconditions.checkNotNull(proxyStubs, "--proxy should be set");
-    int proxyInstance = rand.nextInt(proxyStubs.size());
+  private void runRemoteProxy(RunRecord.Builder record, OutErr outErr) {
+    Preconditions.checkNotNull(proxyCmdStubs, "--proxy should be set");
+    int proxyInstance = rand.nextInt(proxyCmdStubs.size());
     Utils.vlog(
         remoteOptions.verbosity,
         2,
         "Connecting to proxy at %s...",
         proxyTargets.get(proxyInstance));
     Iterator<RunResponse> replies =
-        proxyStubs
+        proxyCmdStubs
             .get(proxyInstance)
-            .run(RunRequest.newBuilder().addAllCommand(Arrays.asList(args)).build());
-    RunResult result = null;
+            .runCommand(RunRequest.newBuilder().setCommand(record.getCommand()).build());
+    CommandResult result = null;
     while (replies.hasNext()) {
       RunResponse resp = replies.next();
       if (!resp.getStdout().isEmpty()) {
@@ -714,81 +722,54 @@ public class RemoteClient {
       }
     } // Always read the entire stream.
     if (result == null) {
-      return RunResult.newBuilder()
-          .setStatus(RunResult.Status.REMOTE_ERROR)
+      result = CommandResult.newBuilder()
+          .setStatus(CommandResult.Status.REMOTE_ERROR)
           .setExitCode(RemoteRunner.REMOTE_ERROR_EXIT_CODE)
           .setMessage("Remote client proxy failed to return a run result.")
           .build();
     }
-    return result;
+    record.setResult(result);
   }
 
-  private static String runCommandParametersToString(RunCommandParameters params) {
+  private static String CommandToString(
+      com.google.devtools.build.lib.remote.commands.Command command) {
     // TODO(olaola): properly quote this.
     StringBuilder sb = new StringBuilder();
-    if (!params.getBuildRequestId().isEmpty()) {
+    Labels labels = command.getLabels();
+    if (!labels.getBuildRequestId().isEmpty()) {
       sb.append("--build_request_id ");
-      sb.append(params.getBuildRequestId());
+      sb.append(labels.getBuildRequestId());
       sb.append(" ");
     }
-    if (!params.getInvocationId().isEmpty()) {
+    if (!labels.getInvocationId().isEmpty()) {
       sb.append("--invocation_id ");
-      sb.append(params.getInvocationId());
+      sb.append(labels.getInvocationId());
       sb.append(" ");
     }
-    if (!params.getName().isEmpty()) {
-      sb.append("--name ");
-      sb.append(params.getName());
+    if (!labels.getCommandId().isEmpty()) {
+      sb.append("--id ");
+      sb.append(labels.getCommandId());
       sb.append(" ");
     }
-    if (params.getAcceptCached()) {
+    if (!labels.getToolName().isEmpty()) {
+      sb.append("--tool_name ");
+      sb.append(labels.getToolName());
+      sb.append(" ");
+    }
+    ExecutionOptions execOptions = command.getExecutionOptions();
+    if (execOptions.getAcceptCached()) {
       sb.append("--accept_cached ");
-      sb.append(params.getAcceptCached());
+      sb.append(execOptions.getAcceptCached());
       sb.append(" ");
     }
-    if (params.getDoNotCache()) {
+    if (execOptions.getDoNotCache()) {
       sb.append("--do_not_cache ");
-      sb.append(params.getDoNotCache());
+      sb.append(execOptions.getDoNotCache());
       sb.append(" ");
     }
-    if (params.getInputsCount() > 0) {
-      sb.append("--inputs ");
-      for (String i : params.getInputsList()) {
-        sb.append(i);
-        sb.append(" ");
-      }
-    }
-    if (params.getOutputFilesCount() > 0) {
-      sb.append("--output_files ");
-      for (String i : params.getOutputFilesList()) {
-        sb.append(i);
-        sb.append(" ");
-      }
-    }
-    if (params.getOutputDirectoriesCount() > 0) {
-      sb.append("--output_directories ");
-      for (String i : params.getOutputDirectoriesList()) {
-        sb.append(i);
-        sb.append(" ");
-      }
-    }
-    if (params.getCommandCount() > 0) {
-      sb.append("--command ");
-      for (String i : params.getCommandList()) {
-        sb.append(i);
-        sb.append(" ");
-      }
-    }
-    if (params.getIgnoreInputsCount() > 0) {
-      sb.append("--ignore_inputs ");
-      for (String i : params.getIgnoreInputsList()) {
-        sb.append(i);
-        sb.append(" ");
-      }
-    }
-    if (params.getEnvironmentVariablesCount() > 0) {
+    if (execOptions.getEnvironmentVariablesCount() > 0) {
       sb.append("--environment_variables ");
-      for (Map.Entry<String, String> e : params.getEnvironmentVariablesMap().entrySet()) {
+      for (Map.Entry<String, String> e : execOptions.getEnvironmentVariablesMap().entrySet()) {
         sb.append(e.getKey());
         sb.append("=");
         sb.append(e.getValue());
@@ -797,9 +778,9 @@ public class RemoteClient {
       sb.deleteCharAt(sb.length() - 1);
       sb.append(" ");
     }
-    if (params.getPlatformCount() > 0) {
+    if (execOptions.getPlatformCount() > 0) {
       sb.append("--platform ");
-      for (Map.Entry<String, String> e : params.getPlatformMap().entrySet()) {
+      for (Map.Entry<String, String> e : execOptions.getPlatformMap().entrySet()) {
         sb.append(e.getKey());
         sb.append("=");
         sb.append(e.getValue());
@@ -808,92 +789,123 @@ public class RemoteClient {
       sb.deleteCharAt(sb.length() - 1);
       sb.append(" ");
     }
-    if (!params.getServerLogsPath().isEmpty()) {
+    if (!execOptions.getServerLogsPath().isEmpty()) {
       sb.append("--server_logs_path ");
-      sb.append(params.getServerLogsPath());
+      sb.append(execOptions.getServerLogsPath());
       sb.append(" ");
     }
-    if (params.getExecutionTimeout() != 0) {
+    if (execOptions.getExecutionTimeout() != 0) {
       sb.append("--execution_timeout ");
-      sb.append(params.getExecutionTimeout());
+      sb.append(execOptions.getExecutionTimeout());
       sb.append(" ");
+    }
+    if (execOptions.getSaveExecutionData()) {
+      sb.append("--save_execution_data true ");
+    }
+    if (!execOptions.getLocalFallback().equals(LocalFallback.NONE)) {
+      sb.append("--local_fallback ");
+      sb.append(execOptions.getLocalFallback().toString());
+      sb.append(" ");
+    }
+    if (command.getInputsCount() > 0) {
+      sb.append("--inputs ");
+      for (String i : command.getInputsList()) {
+        sb.append(i);
+        sb.append(" ");
+      }
+    }
+    if (command.getOutputFilesCount() > 0) {
+      sb.append("--output_files ");
+      for (String i : command.getOutputFilesList()) {
+        sb.append(i);
+        sb.append(" ");
+      }
+    }
+    if (command.getOutputDirectoriesCount() > 0) {
+      sb.append("--output_directories ");
+      for (String i : command.getOutputDirectoriesList()) {
+        sb.append(i);
+        sb.append(" ");
+      }
+    }
+    if (command.getArgsCount() > 0) {
+      sb.append("--command ");
+      for (String i : command.getArgsList()) {
+        sb.append(i);
+        sb.append(" ");
+      }
+    }
+    if (command.getIgnoreInputsCount() > 0) {
+      sb.append("--ignore_inputs ");
+      for (String i : command.getIgnoreInputsList()) {
+        sb.append(i);
+        sb.append(" ");
+      }
     }
     sb.deleteCharAt(sb.length() - 1);
     return sb.toString();
   }
 
-  private static RunCommandParameters runRemoteCommandToProto(RunRemoteCommand options) {
-    return RunCommandParameters.newBuilder()
-        .setBuildRequestId(options.buildRequestId)
-        .setInvocationId(options.invocationId)
-        .setName(options.name)
-        .setWorkingDirectory(options.workingDirectory)
-        .setAcceptCached(options.acceptCached)
-        .setDoNotCache(options.doNotCache)
-        .addAllInputs(options.inputs.stream().map(Path::toString).collect(Collectors.toList()))
-        .addAllOutputFiles(
-            options.outputFiles.stream().map(Path::toString).collect(Collectors.toList()))
-        .addAllOutputDirectories(
-            options.outputDirectories.stream().map(Path::toString).collect(Collectors.toList()))
-        .addAllCommand(options.command)
-        .addAllIgnoreInputs(options.ignoreInputs)
-        .putAllEnvironmentVariables(options.environmentVariables)
-        .putAllPlatform(options.platform)
-        .setServerLogsPath(options.serverLogsPath == null ? "" : options.serverLogsPath.toString())
-        .setExecutionTimeout(options.executionTimeout)
-        .build();
-  }
-
-  public RunRecord.Builder newFromCommandOptions(RunRemoteCommand options) {
-    if (Strings.isNullOrEmpty(options.buildRequestId)) {
-      options.buildRequestId = UUID.randomUUID().toString();
+  public RunRecord.Builder newFromCommand(
+      com.google.devtools.build.lib.remote.commands.Command command) {
+    Labels.Builder labels = command.getLabels().toBuilder();
+    if (labels.getInvocationId().isEmpty()) {
+      labels.setInvocationId(UUID.randomUUID().toString());
     }
-    if (Strings.isNullOrEmpty(options.invocationId)) {
-      options.invocationId = UUID.randomUUID().toString();
+    if (labels.getBuildRequestId().isEmpty()) {
+      labels.setBuildRequestId(UUID.randomUUID().toString());
     }
-    if (Strings.isNullOrEmpty(options.name)) {
-      options.name = UUID.randomUUID().toString().substring(0, 8);
-    }
-    if (options.inputs == null) {
-      options.inputs = new ArrayList<>();
-    }
-    if (options.outputFiles == null) {
-      options.outputFiles = new ArrayList<>();
-    }
-    if (options.outputDirectories == null) {
-      options.outputDirectories = new ArrayList<>();
-    }
-    if (options.platform == null) {
-      options.platform = new HashMap<>();
-    }
-    if (options.environmentVariables == null) {
-      options.environmentVariables = new HashMap<>();
-    }
-    if (options.ignoreInputs == null) {
-      options.ignoreInputs = new ArrayList<>();
+    if (labels.getCommandId().isEmpty()) {
+      // TODO(olaola): switch to a stable command id.
+      labels.setCommandId(UUID.randomUUID().toString().substring(0, 8));
     }
     return RunRecord.newBuilder()
-        .setCommandParameters(runRemoteCommandToProto(options))
+        .setCommand(command.toBuilder().setLabels(labels))
         .setStage(Stage.QUEUED)
         .setLocalTimestamps(
             LocalTimestamps.newBuilder().setQueuedStart(Utils.getCurrentTimestamp(clock)));
   }
 
-  public void runRemote(
-      RunRemoteCommand options, OutErr outErr, RunRecord.Builder record, String... args) {
+  public RunRecord.Builder newFromCommandOptions(RunRemoteCommand options) {
+    return newFromCommand(com.google.devtools.build.lib.remote.commands.Command.newBuilder()
+        .setLabels(Labels.newBuilder()
+            .setCommandId(options.id)
+            .setBuildRequestId(options.buildRequestId)
+            .setInvocationId(options.invocationId)
+            .setToolName(options.toolName)
+            .putAllLabels(options.labels))
+        .setExecutionOptions(ExecutionOptions.newBuilder()
+            .setWorkingDirectory(options.workingDirectory)
+            .setAcceptCached(options.acceptCached)
+            .setDoNotCache(options.doNotCache)
+            .putAllEnvironmentVariables(options.environmentVariables)
+            .putAllPlatform(options.platform)
+            .setServerLogsPath(options.serverLogsPath)
+            .setExecutionTimeout(options.executionTimeout)
+            .setSaveExecutionData(options.saveExecutionData)
+            .setLocalFallback(options.localFallback))
+        .addAllInputs(options.inputs)
+        .addAllOutputFiles(options.outputFiles)
+        .addAllOutputDirectories(options.outputDirectories)
+        .addAllArgs(options.command)
+        .addAllIgnoreInputs(options.ignoreInputs)
+        .build());
+  }
+
+  public void runRemote(RunRecord.Builder record, OutErr outErr) {
     if (Strings.isNullOrEmpty(clientOptions.proxy)) {
-      getRunner().runRemote(options, outErr, record);
+      getRunner().runRemote(record, outErr);
     } else {
-      record.setResult(runRemoteProxy(options, outErr, args));
+      runRemoteProxy(record, outErr);
     }
-    RunResult result = record.getResult();
+    CommandResult result = record.getResult();
     switch (result.getStatus()) {
       case NON_ZERO_EXIT:
         outErr.printErrLn("Remote action FAILED with exit code " + result.getExitCode());
         break;
       case TIMEOUT:
-        outErr.printErrLn(
-            "Remote action TIMED OUT after " + options.executionTimeout + " seconds.");
+        int timeout = record.getCommand().getExecutionOptions().getExecutionTimeout();
+        outErr.printErrLn("Remote action TIMED OUT after " + timeout + " seconds.");
         break;
       case INTERRUPTED:
         outErr.printErrLn("Remote execution was INTERRUPTED.");
@@ -907,14 +919,13 @@ public class RemoteClient {
     }
   }
 
-  private void printRecord(RunRecord record, ProxyPrintRemoteCommand options) {
-    System.out.println(runCommandParametersToString(record.getCommandParameters()));
-    if (options.full && record.hasExecutionData()) {
-      System.out.println(record.getExecutionData());
-    }
-  }
-
-  private void doProxyPrintRemoteCommand(ProxyPrintRemoteCommand options) throws IOException {
+  private com.google.devtools.build.lib.remote.commands.Command findRemoteCommand(
+      ProxyPrintRemoteCommand options) throws IOException {
+    SliceOptions sliceOptions = SliceOptions.newBuilder()
+        .setLabels(Labels.newBuilder()
+            .setInvocationId(options.invocationId)
+            .setCommandId(options.commandId))
+        .build();
     if (options.proxyStatsFile != null) {
       StatsResponse.Builder builder = StatsResponse.newBuilder();
       try (FileInputStream fin = new FileInputStream(options.proxyStatsFile)) {
@@ -922,44 +933,58 @@ public class RemoteClient {
       }
       StatsResponse resp = builder.build();
       for (RunRecord record : resp.getRunRecordsList()) {
-        if (record.getCommandParameters().getName().equals(options.commandId) &&
-            (Strings.isNullOrEmpty(options.invocationId) ||
-                record.getCommandParameters().getInvocationId().equals(options.invocationId))) {
-          printRecord(record, options);
-          return; // Print the first one that matched.
+        if (Stats.shouldCountRecord(record.toBuilder(), sliceOptions)) {
+          return record.getCommand(); // Return the first one that matched.
         }
       }
     }
-    Preconditions.checkNotNull(proxyStubs, "--proxy should be set");
-    for (CommandServiceBlockingStub proxyStub : proxyStubs) {
-      FetchRecordResponse resp =
-          proxyStub.fetchRecord(
-              FetchRecordRequest.newBuilder()
-                  .setCommandId(options.commandId)
-                  .setInvocationId(options.invocationId)
-                  .build());
-      if (!resp.hasRecord()) {
-        continue;
+    Preconditions.checkNotNull(proxyStatStubs, "--proxy should be set");
+    StatsRequest req =
+        StatsRequest.newBuilder()
+            .setFetchRecords(true)
+            .setSliceOptions(sliceOptions)
+            .build();
+    for (StatsBlockingStub proxyStub : proxyStatStubs) {
+      Iterator<StatsResponse> replies = proxyStub.getStats(req);
+      if (replies.hasNext()) {
+        StatsResponse resp = replies.next();
+        if (resp.getRunRecordsCount() > 0) {
+          return resp.getRunRecords(0).getCommand(); // Return the first one that matched.
+        }
       }
-      printRecord(resp.getRecord(), options);
-      return; // Print the first one that matched.
     }
-    System.out.println("Record with id " + options.commandId + " was not found.");
+    return null;
+  }
+
+  private void doProxyPrintRemoteCommand(ProxyPrintRemoteCommand options) throws IOException {
+    com.google.devtools.build.lib.remote.commands.Command command = findRemoteCommand(options);
+    System.out.println(command == null ?
+        "Record with id " + options.commandId + " was not found." :
+        CommandToString(command));
   }
 
   private void doProxyStats(ProxyStatsCommand options) throws IOException {
-    StatsRequest.Builder req =
-        StatsRequest.newBuilder()
-            .setFull(options.full || proxyStubs.size() > 1)
+    Preconditions.checkArgument(
+        options.proxyStatsFile != null || proxyStatStubs != null,
+        "either --proxy_stats_file or --proxy should be set");
+    SliceOptions.Builder slice = SliceOptions.newBuilder()
+        .setLabels(Labels.newBuilder()
             .setInvocationId(options.invocationId)
-            .setStatus(options.status)
-            .setSummary(proxyStubs.size() == 1);
+            .setCommandId(options.commandId)
+            .putAllLabels(options.labels))
+        .setStatus(options.status);
     if (options.fromTs > 0) {
-      req.setFromTs(Timestamp.newBuilder().setSeconds(options.fromTs));
+      slice.setFromTs(Timestamp.newBuilder().setSeconds(options.fromTs));
     }
     if (options.toTs > 0) {
-      req.setToTs(Timestamp.newBuilder().setSeconds(options.toTs));
+      slice.setToTs(Timestamp.newBuilder().setSeconds(options.toTs));
     }
+    StatsRequest req =
+        StatsRequest.newBuilder()
+            .setSliceOptions(slice)
+            .setFetchRecords(options.full || proxyStatStubs.size() > 1)
+            .setComputeAggregate(options.proxyStatsFile != null || proxyStatStubs.size() == 1)
+            .build();
     if (options.proxyStatsFile != null) {
       StatsResponse.Builder builder = StatsResponse.newBuilder();
       try (FileInputStream fin = new FileInputStream(options.proxyStatsFile)) {
@@ -969,20 +994,20 @@ public class RemoteClient {
       List<RunRecord.Builder> records = builder.build().getRunRecordsList().stream()
           .map(RunRecord::toBuilder)
           .sorted((r1, r2) ->
-              r1.getCommandParameters().getName().compareTo(r2.getCommandParameters().getName()))
+              r1.getCommand().getLabels().getCommandId().compareTo(
+                  r2.getCommand().getLabels().getCommandId()))
           .collect(Collectors.toList());
-      aggr.setProxyStats(Stats.computeStats(req.build(), records));
+      aggr.setProxyStats(Stats.computeStats(req, records));
       if (options.full) {
         aggr.addAllRunRecords(builder.build().getRunRecordsList());
       }
       System.out.println(aggr.toString());
       return;
     }
-    Preconditions.checkNotNull(proxyStubs, "--proxy should be set");
     StatsResponse.Builder aggr = StatsResponse.newBuilder();
     List<RunRecord.Builder> records = new ArrayList<>();
-    for (CommandServiceBlockingStub proxyStub : proxyStubs) {
-      Iterator<StatsResponse> replies = proxyStub.stats(req.build());
+    for (StatsBlockingStub proxyStub : proxyStatStubs) {
+      Iterator<StatsResponse> replies = proxyStub.getStats(req);
       while (replies.hasNext()) {
         StatsResponse resp = replies.next();
         records.addAll(
@@ -996,19 +1021,20 @@ public class RemoteClient {
     }
     if (options.full) {
       records.sort((r1, r2) ->
-          r1.getCommandParameters().getName().compareTo(r2.getCommandParameters().getName()));
+          r1.getCommand().getLabels().getCommandId().compareTo(
+              r2.getCommand().getLabels().getCommandId()));
       aggr.addAllRunRecords(
           records.stream().map(RunRecord.Builder::build).collect(Collectors.toList()));
     }
-    if (proxyStubs.size() > 1) {
-      aggr.setProxyStats(Stats.computeStats(req.build(), records));
+    if (proxyStatStubs.size() > 1) {
+      aggr.setProxyStats(Stats.computeStats(req, records));
     }
     System.out.println(aggr.toString());
   }
 
-  private void doRunRemote(RunRemoteCommand options, String... args) {
+  private void doRunRemote(RunRemoteCommand options) {
     RunRecord.Builder record = newFromCommandOptions(options);
-    runRemote(options, OutErr.SYSTEM_OUT_ERR, record, args);
+    runRemote(record, OutErr.SYSTEM_OUT_ERR);
     close();
     System.exit(record.getResult().getExitCode());
   }
@@ -1136,7 +1162,7 @@ public class RemoteClient {
         client.doProxyStats(proxyStatsCommand);
         break;
       case "run_remote":
-        client.doRunRemote(runRemoteCommand, args);
+        client.doRunRemote(runRemoteCommand);
         break;
       case "failed_actions":
         client.doFailedActions(failedActionsCommand);

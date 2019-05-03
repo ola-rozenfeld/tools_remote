@@ -14,19 +14,21 @@
 package com.google.devtools.build.remote.client;
 
 import build.bazel.remote.execution.v2.ExecutedActionMetadata;
-import com.google.devtools.build.lib.remote.proxy.ActionMetadata;
-import com.google.devtools.build.lib.remote.proxy.ActionStats;
-import com.google.devtools.build.lib.remote.proxy.LocalExecutionStats;
-import com.google.devtools.build.lib.remote.proxy.LocalTimestamps;
-import com.google.devtools.build.lib.remote.proxy.ProxyStats;
-import com.google.devtools.build.lib.remote.proxy.RemoteExecutionStats;
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
-import com.google.devtools.build.lib.remote.proxy.RunRecord.Stage;
-import com.google.devtools.build.lib.remote.proxy.RunResult;
-import com.google.devtools.build.lib.remote.proxy.RunResult.Status;
-import com.google.devtools.build.lib.remote.proxy.StatsRequest;
-import com.google.devtools.build.lib.remote.proxy.Stat;
-import com.google.devtools.build.lib.remote.proxy.Stat.Outlier;
+import com.google.devtools.build.lib.remote.commands.Labels;
+import com.google.devtools.build.lib.remote.commands.CommandResult;
+import com.google.devtools.build.lib.remote.commands.CommandResult.Status;
+import com.google.devtools.build.lib.remote.stats.ActionMetadata;
+import com.google.devtools.build.lib.remote.stats.ActionStats;
+import com.google.devtools.build.lib.remote.stats.LocalExecutionStats;
+import com.google.devtools.build.lib.remote.stats.LocalTimestamps;
+import com.google.devtools.build.lib.remote.stats.ProxyStats;
+import com.google.devtools.build.lib.remote.stats.RemoteExecutionStats;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
+import com.google.devtools.build.lib.remote.stats.RunRecord.Stage;
+import com.google.devtools.build.lib.remote.stats.SliceOptions;
+import com.google.devtools.build.lib.remote.stats.StatsRequest;
+import com.google.devtools.build.lib.remote.stats.Stat;
+import com.google.devtools.build.lib.remote.stats.Stat.Outlier;
 import com.google.common.math.Quantiles;
 import com.google.common.math.Quantiles;
 import com.google.protobuf.Timestamp;
@@ -35,6 +37,7 @@ import com.google.protobuf.util.Timestamps;
 import java.util.Comparator;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /** Utils to compute run time statistics on actions run by the proxy.*/
@@ -58,12 +61,12 @@ public class Stats {
       return values.size();
     }
 
-    public void add(String name, long value) {
+    public void add(String id, long value) {
       values.add(value);
       if (computeTotal) {
         total += value;
       }
-      Outlier cur = Outlier.newBuilder().setName(name).setValue(value).build();
+      Outlier cur = Outlier.newBuilder().setId(id).setValue(value).build();
       if (outlier1 == null || value > outlier1.getValue()) {
         outlier2 = outlier1;
         outlier1 = cur;
@@ -122,9 +125,9 @@ public class Stats {
 
   static class DurationStatistic extends Statistic {
     private final ArrayList<TimeInterval> intervals = new ArrayList<>();
-    public void add(String name, Timestamp from, Timestamp to) {
+    public void add(String id, Timestamp from, Timestamp to) {
       intervals.add(new TimeInterval(from, to));
-      add(name, Durations.toMillis(Timestamps.between(from, to)));
+      add(id, Durations.toMillis(Timestamps.between(from, to)));
     }
 
     private long computeParallelTimeMs() {
@@ -164,11 +167,11 @@ public class Stats {
     private final Statistic numOutputsStats = new Statistic();
     private final Statistic totalOutputBytesStats = new Statistic();
 
-    public void addDataPoint(String name, ActionMetadata meta) {
-      numInputsStats.add(name, meta.getNumInputs());
-      totalInputBytesStats.add(name, meta.getTotalInputBytes());
-      numOutputsStats.add(name, meta.getNumOutputs());
-      totalOutputBytesStats.add(name, meta.getTotalOutputBytes());
+    public void addDataPoint(String id, ActionMetadata meta) {
+      numInputsStats.add(id, meta.getNumInputs());
+      totalInputBytesStats.add(id, meta.getTotalInputBytes());
+      numOutputsStats.add(id, meta.getNumOutputs());
+      totalOutputBytesStats.add(id, meta.getTotalOutputBytes());
     }
 
     public long getCount() {
@@ -192,15 +195,15 @@ public class Stats {
     private final DurationStatistic executionStats = new DurationStatistic();
     private final DurationStatistic outputUploadStats = new DurationStatistic();
 
-    public void addDataPoint(String name, ExecutedActionMetadata meta) {
-      queuedStats.add(name, meta.getQueuedTimestamp(), meta.getWorkerStartTimestamp());
-      workerStats.add(name, meta.getWorkerStartTimestamp(), meta.getWorkerCompletedTimestamp());
+    public void addDataPoint(String id, ExecutedActionMetadata meta) {
+      queuedStats.add(id, meta.getQueuedTimestamp(), meta.getWorkerStartTimestamp());
+      workerStats.add(id, meta.getWorkerStartTimestamp(), meta.getWorkerCompletedTimestamp());
       inputFetchStats.add(
-          name, meta.getInputFetchStartTimestamp(), meta.getInputFetchCompletedTimestamp());
+          id, meta.getInputFetchStartTimestamp(), meta.getInputFetchCompletedTimestamp());
       executionStats.add(
-          name, meta.getExecutionStartTimestamp(), meta.getExecutionCompletedTimestamp());
+          id, meta.getExecutionStartTimestamp(), meta.getExecutionCompletedTimestamp());
       outputUploadStats.add(
-          name, meta.getOutputUploadStartTimestamp(), meta.getOutputUploadCompletedTimestamp());
+          id, meta.getOutputUploadStartTimestamp(), meta.getOutputUploadCompletedTimestamp());
     }
 
     public long getCount() {
@@ -227,23 +230,23 @@ public class Stats {
     private final DurationStatistic downloadOutputsStats = new DurationStatistic();
     private final DurationStatistic totalLocalStats = new DurationStatistic();
 
-    public void addDataPoint(String name, LocalTimestamps ts) {
+    public void addDataPoint(String id, LocalTimestamps ts) {
       if (ts.hasQueuedEnd()) {
-        queuedStats.add(name, ts.getQueuedStart(), ts.getQueuedEnd());
+        queuedStats.add(id, ts.getQueuedStart(), ts.getQueuedEnd());
       }
       if (ts.hasInputTreeEnd()) {
-        inputTreeStats.add(name, ts.getInputTreeStart(), ts.getInputTreeEnd());
+        inputTreeStats.add(id, ts.getInputTreeStart(), ts.getInputTreeEnd());
       }
-      checkActionCacheStats.add(name, ts.getCheckActionCacheStart(), ts.getCheckActionCacheEnd());
+      checkActionCacheStats.add(id, ts.getCheckActionCacheStart(), ts.getCheckActionCacheEnd());
       if (ts.hasUploadInputsEnd()) {
-        uploadInputsStats.add(name, ts.getUploadInputsStart(), ts.getUploadInputsEnd());
+        uploadInputsStats.add(id, ts.getUploadInputsStart(), ts.getUploadInputsEnd());
       }
       if (ts.hasExecuteEnd()) {
-        executeStats.add(name, ts.getExecuteStart(), ts.getExecuteEnd());
+        executeStats.add(id, ts.getExecuteStart(), ts.getExecuteEnd());
       }
       if (ts.hasDownloadOutputsEnd()) {
-        downloadOutputsStats.add(name, ts.getDownloadOutputsStart(), ts.getDownloadOutputsEnd());
-        totalLocalStats.add(name, ts.getQueuedStart(), ts.getDownloadOutputsEnd());
+        downloadOutputsStats.add(id, ts.getDownloadOutputsStart(), ts.getDownloadOutputsEnd());
+        totalLocalStats.add(id, ts.getQueuedStart(), ts.getDownloadOutputsEnd());
       }
     }
 
@@ -264,22 +267,35 @@ public class Stats {
     }
   }
 
-  public static boolean shouldCountRecord(RunRecord.Builder rec, StatsRequest req) {
-    if (!req.getInvocationId().isEmpty() &&
-        !req.getInvocationId().equals(rec.getCommandParameters().getInvocationId())) {
+  public static boolean shouldCountRecord(RunRecord.Builder rec, SliceOptions sliceOptions) {
+    Labels labels = sliceOptions.getLabels();
+    Labels cmdLabels = rec.getCommand().getLabels();
+    if (!labels.getInvocationId().isEmpty() &&
+        !labels.getInvocationId().equals(cmdLabels.getInvocationId())) {
+      return false;
+    }
+    if (!labels.getCommandId().isEmpty() &&
+        !labels.getCommandId().equals(cmdLabels.getCommandId())) {
       return false;
     }
     LocalTimestamps ts = rec.getLocalTimestamps();
-    if (req.hasFromTs() && ts.hasQueuedStart() &&
-        Timestamps.compare(req.getFromTs(), ts.getQueuedStart()) > 0) {
+    if (sliceOptions.hasFromTs() && ts.hasQueuedStart() &&
+        Timestamps.compare(sliceOptions.getFromTs(), ts.getQueuedStart()) > 0) {
       return false;
     }
-    if (req.hasToTs() && (!ts.hasDownloadOutputsEnd() ||
-        Timestamps.compare(req.getToTs(), ts.getDownloadOutputsEnd()) < 0)) {
+    if (sliceOptions.hasToTs() && (!ts.hasDownloadOutputsEnd() ||
+        Timestamps.compare(sliceOptions.getToTs(), ts.getDownloadOutputsEnd()) < 0)) {
       return false;
     }
-    if (req.getStatus() != Status.UNKNOWN && rec.getResult().getStatus() != req.getStatus()) {
+    if (sliceOptions.getStatus() != Status.UNKNOWN &&
+        rec.getResult().getStatus() != sliceOptions.getStatus()) {
       return false;
+    }
+    Map<String,String> cmdOtherLabels = cmdLabels.getLabels();
+    for (Map.Entry<String,String> e : labels.getLabels().entrySet()) {
+      if (!e.getValue().equals(cmdOtherLabels.get(e.getKey()))) {
+        return false;
+      }
     }
     return true;
   }
@@ -296,7 +312,7 @@ public class Stats {
     RemoteExecutionStatistics remoteStats = new RemoteExecutionStatistics();
     LocalStatistics localStats = new LocalStatistics();
     for (RunRecord.Builder rec : records) {
-      if (!shouldCountRecord(rec, req)) {
+      if (!shouldCountRecord(rec, req.getSliceOptions())) {
         continue;
       }
       if (rec.hasResultBeforeLocalFallback()) {
@@ -307,13 +323,13 @@ public class Stats {
       if (stage.getNumber() >= stage.UPLOADING_INPUTS.getNumber()) { // Stages are in order.
         afterAcCall++;
       }
-      String name = rec.getCommandParameters().getName();
-      if (rec.hasResult() && rec.getResult().hasMetadata()) {
-        remoteStats.addDataPoint(name, rec.getResult().getMetadata());
+      String id = rec.getCommand().getLabels().getCommandId();
+      if (rec.hasRemoteMetadata()) {
+        remoteStats.addDataPoint(id, rec.getRemoteMetadata());
       }
       if (rec.hasLocalTimestamps()) {
         LocalTimestamps ts = rec.getLocalTimestamps();
-        localStats.addDataPoint(name, ts);
+        localStats.addDataPoint(id, ts);
         if (startTs == null ||
             (ts.hasQueuedStart() && Timestamps.compare(startTs, ts.getQueuedStart()) > 0)) {
           startTs = ts.getQueuedStart();
@@ -330,7 +346,7 @@ public class Stats {
       ActionMetadata meta = rec.getActionMetadata();  // It always exists at this point.
       numInputs += meta.getNumInputs();
       proxyStats.setCasCacheMisses(proxyStats.getCasCacheMisses() + meta.getCasCacheMisses());
-      actionStats.addDataPoint(name, meta);
+      actionStats.addDataPoint(id, meta);
       finishedByStatus[rec.getResult().getStatus().getNumber()]++;
     }
     if (numInputs > 0) {

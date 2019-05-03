@@ -1,0 +1,159 @@
+// Copyright 2019 The Bazel Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// This file contains the protocol used to communicate between the Bazel client
+// and the server. At a high level clients may call the CommandServer.run rpc
+// to initiates a Bazel command and CommandServer.cancel to cancel an in-flight
+// command. CommandServer.ping may be used to check for server liveness without
+// executing any commands. See documentation of individual messages for more
+// details.
+syntax = "proto3";
+
+package remote_client;
+
+option java_package = "com.google.devtools.build.lib.remote.commands";
+option java_multiple_files = true;
+option java_outer_classname = "CommandsProto";
+
+service Commands {
+  // Run a remote command and wait for completion.
+  rpc RunCommand (RunRequest) returns (stream RunResponse) {}
+}
+
+// Passed to CommandServer.run to initiate execution of a remote command.
+message RunRequest {
+  // Properties of the command to run.
+  Command command = 1;
+}
+
+// Contains metadata and result data for a command execution.
+message RunResponse {
+  // Standard out of the command, chunked. May be empty.
+  string stdout = 1;
+
+  // Standard error of the command, chunked. May be empty.
+  string stderr = 2;
+
+  // Result of the command execution.
+  CommandResult result = 3;
+}
+
+// The command to be executed remotely.
+message Command {
+  // Labels used to identify this command.
+  Labels labels = 1;
+
+  // Input paths (files or directories) relative to exec root to include for
+  // command execution.
+  repeated string inputs = 2;
+
+  // Inputs to ignore, as regular expressions.
+  repeated string ignore_inputs = 3;
+
+  // Output files relative to exec root to download after command executes.
+  repeated string output_files = 4;
+
+  // Output directories relative to exec root to download after execution.
+  repeated string output_directories = 5;
+
+  // Command line elements to execute.
+  repeated string args = 6;
+
+  // Options for executing this command.
+  ExecutionOptions execution_options = 7;
+}
+
+// Labels identifying a command.
+message Labels {
+  // An optional id to use to identify a command.
+  string command_id = 1;
+
+  // An optional id to use to identify an invocation.
+  string invocation_id = 2;
+
+  // An optional id to use to identify a build.
+  string build_request_id = 3;
+
+  // An optional tool name to pass to the remote server for logging.
+  string tool_name = 4;
+
+  // Other labels belonging to the command by which it can later be sliced.
+  map<string,string> labels = 5;
+}
+
+// Options for executing a command.
+message ExecutionOptions {
+  // Options for falling back locally if the remote execution failed.
+  enum LocalFallback {
+    // No local fallback.
+    NONE = 0;
+    // Local fallback by executing the command in exec root.
+    LOCAL = 1;
+    // Local fallback by executing the command in the platform's Docker
+    // container.
+    DOCKER = 2;
+  }
+
+  // Whether to accept remotely cached action results.
+  bool accept_cached = 1;
+
+  // When set, this action results will not be cached remotely.
+  bool do_not_cache = 2;
+
+  // If > 0, the maximum number of seconds to wait for command execution
+  // before timing out.
+  int32 execution_timeout = 3;
+
+  // The working directory, relative to the exec root, for the command to run
+  // in. It must be a directory which exists in the input tree. If it is left
+  // empty, then the action is run in the exec root.
+  string working_directory = 4;
+
+  // Environment variables to pass through to remote execution.
+  map<string,string> environment_variables = 5;
+
+  // The platform to use for the remote execution.
+  map<string,string> platform = 6;
+
+  // What to do in case the action failed remotely.
+  LocalFallback local_fallback = 7;
+
+  // Optional absolute path to save server logs for failed actions.
+  string server_logs_path = 8;
+
+  // When set, the proxy saves the full execution data for the executed action.
+  bool save_execution_data = 9;
+}
+
+// Result of a command execution returned by the proxy.
+message CommandResult {
+  enum Status {
+    UNKNOWN = 0;
+    SUCCESS = 1;
+    CACHE_HIT = 2;
+    NON_ZERO_EXIT = 3;
+    TIMEOUT = 4;
+    INTERRUPTED = 5;
+    REMOTE_ERROR = 6;
+    LOCAL_ERROR = 7;
+  }
+  // Status of the finished run.
+  Status status = 1;
+
+  // Command exit code.
+  int32 exit_code = 2;
+
+  // Optional exception trace or other message that should be displayed.
+  string message = 3;
+}

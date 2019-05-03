@@ -35,6 +35,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
 import com.google.devtools.build.remote.client.util.DigestUtil;
 import com.google.devtools.build.remote.client.util.DigestUtil.ActionKey;
 import com.google.devtools.build.remote.client.util.Utils;
@@ -90,7 +91,7 @@ public class AbstractRemoteActionCacheTests {
     ActionResult.Builder result = ActionResult.newBuilder();
     result.addOutputFileSymlinksBuilder().setPath("a/b/link").setTarget("../../foo");
     // Doesn't check for dangling links, hence download succeeds.
-    cache.download(result.build(), execRoot, null);
+    cache.download(result.build(), execRoot, null, RunRecord.newBuilder());
     Path path = execRoot.resolve("a/b/link");
     assertThat(Files.isSymbolicLink(path)).isTrue();
     assertThat(Files.readSymbolicLink(path).toString()).isEqualTo("../../foo");
@@ -102,7 +103,7 @@ public class AbstractRemoteActionCacheTests {
     ActionResult.Builder result = ActionResult.newBuilder();
     result.addOutputDirectorySymlinksBuilder().setPath("a/b/link").setTarget("foo");
     // Doesn't check for dangling links, hence download succeeds.
-    cache.download(result.build(), execRoot, null);
+    cache.download(result.build(), execRoot, null, RunRecord.newBuilder());
     Path path = execRoot.resolve("a/b/link");
     assertThat(Files.isSymbolicLink(path)).isTrue();
     assertThat(Files.readSymbolicLink(path).toString()).isEqualTo("foo");
@@ -121,7 +122,7 @@ public class AbstractRemoteActionCacheTests {
     ActionResult.Builder result = ActionResult.newBuilder();
     result.addOutputDirectoriesBuilder().setPath("dir").setTreeDigest(treeDigest);
     // Doesn't check for dangling links, hence download succeeds.
-    cache.download(result.build(), execRoot, null);
+    cache.download(result.build(), execRoot, null, RunRecord.newBuilder());
     Path path = execRoot.resolve("dir/link");
     assertThat(Files.isSymbolicLink(path)).isTrue();
     assertThat(Files.readSymbolicLink(path).toString()).isEqualTo("../foo");
@@ -133,7 +134,7 @@ public class AbstractRemoteActionCacheTests {
     ActionResult.Builder result = ActionResult.newBuilder();
     result.addOutputDirectorySymlinksBuilder().setPath("foo").setTarget("/abs/link");
     try {
-      cache.download(result.build(), execRoot, null);
+      cache.download(result.build(), execRoot, null, RunRecord.newBuilder());
       fail("Expected exception");
     } catch (IOException expected) {
       assertThat(expected).hasMessageThat().contains("/abs/link");
@@ -147,7 +148,7 @@ public class AbstractRemoteActionCacheTests {
     ActionResult.Builder result = ActionResult.newBuilder();
     result.addOutputFileSymlinksBuilder().setPath("foo").setTarget("/abs/link");
     try {
-      cache.download(result.build(), execRoot, null);
+      cache.download(result.build(), execRoot, null, RunRecord.newBuilder());
       fail("Expected exception");
     } catch (IOException expected) {
       assertThat(expected).hasMessageThat().contains("/abs/link");
@@ -168,7 +169,7 @@ public class AbstractRemoteActionCacheTests {
     ActionResult.Builder result = ActionResult.newBuilder();
     result.addOutputDirectoriesBuilder().setPath("dir").setTreeDigest(treeDigest);
     try {
-      cache.download(result.build(), execRoot, null);
+      cache.download(result.build(), execRoot, null, RunRecord.newBuilder());
       fail("Expected exception");
     } catch (IOException expected) {
       assertThat(expected).hasMessageThat().contains("dir/link");
@@ -201,7 +202,7 @@ public class AbstractRemoteActionCacheTests {
     result.setStdoutRaw(ByteString.copyFromUtf8("stdout"));
     result.setStderrDigest(cache.addContents("stderr".getBytes(UTF_8)));
     RecordingOutErr outErr = new RecordingOutErr();
-    cache.download(result.build(), execRoot, outErr);
+    cache.download(result.build(), execRoot, outErr, RunRecord.newBuilder());
     assertThat(outErr.outAsLatin1()).isEqualTo("stdout");
     assertThat(outErr.errAsLatin1()).isEqualTo("stderr");
 
@@ -227,7 +228,7 @@ public class AbstractRemoteActionCacheTests {
         OutputFile.newBuilder().setPath("outputdir/outputfile").setDigest(outputFileDigest));
     result.addOutputFiles(OutputFile.newBuilder().setPath("otherfile").setDigest(otherFileDigest));
     try {
-      cache.download(result.build(), execRoot, null);
+      cache.download(result.build(), execRoot, null, RunRecord.newBuilder());
       fail("Expected exception");
     } catch (IOException expected) {
       assertThat(cache.getNumFailedDownloads()).isEqualTo(1);
@@ -255,7 +256,7 @@ public class AbstractRemoteActionCacheTests {
             .addOutputFiles(OutputFile.newBuilder().setPath("file3").setDigest(digest3))
             .build();
     try {
-      cache.download(result, execRoot, null);
+      cache.download(result, execRoot, null, RunRecord.newBuilder());
       fail("Expected IOException");
     } catch (IOException e) {
       assertThat(cache.getNumSuccessfulDownloads()).isEqualTo(2);

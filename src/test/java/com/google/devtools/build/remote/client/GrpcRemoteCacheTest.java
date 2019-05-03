@@ -38,6 +38,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.hash.Hashing;
 import com.google.common.jimfs.Configuration;
 import com.google.common.jimfs.Jimfs;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
 import com.google.devtools.build.remote.client.util.DigestUtil;
 import com.google.devtools.build.remote.client.util.TracingMetadataUtils;
 import com.google.devtools.build.remote.client.util.Utils;
@@ -90,7 +91,7 @@ public class GrpcRemoteCacheTest {
             .start();
 
     execRoot = fs.getPath("/exec/root/");
-    TracingMetadataUtils.contextWithMetadata().attach();
+    TracingMetadataUtils.contextWithMetadata("GrpcRemoteCacheTest").attach();
   }
 
   @After
@@ -443,7 +444,7 @@ public class GrpcRemoteCacheTest {
     result.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
     result.addOutputFilesBuilder().setPath("b/empty").setDigest(emptyDigest);
     result.addOutputFilesBuilder().setPath("a/bar").setDigest(barDigest).setIsExecutable(true);
-    client.download(result.build(), execRoot, null);
+    client.download(result.build(), execRoot, null, RunRecord.newBuilder());
     assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/foo"))).isEqualTo(fooDigest);
     assertThat(DIGEST_UTIL.compute(execRoot.resolve("b/empty"))).isEqualTo(emptyDigest);
     assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/bar"))).isEqualTo(barDigest);
@@ -478,7 +479,7 @@ public class GrpcRemoteCacheTest {
     ActionResult.Builder result = ActionResult.newBuilder();
     result.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
     result.addOutputDirectoriesBuilder().setPath("a/bar").setTreeDigest(barTreeDigest);
-    client.download(result.build(), execRoot, null);
+    client.download(result.build(), execRoot, null, RunRecord.newBuilder());
 
     assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/foo"))).isEqualTo(fooDigest);
     assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/bar/qux"))).isEqualTo(quxDigest);
@@ -498,7 +499,7 @@ public class GrpcRemoteCacheTest {
 
     ActionResult.Builder result = ActionResult.newBuilder();
     result.addOutputDirectoriesBuilder().setPath("a/bar").setTreeDigest(barTreeDigest);
-    client.download(result.build(), execRoot, null);
+    client.download(result.build(), execRoot, null, RunRecord.newBuilder());
 
     assertThat(Files.isDirectory(execRoot.resolve("a/bar"))).isTrue();
   }
@@ -537,7 +538,7 @@ public class GrpcRemoteCacheTest {
     ActionResult.Builder result = ActionResult.newBuilder();
     result.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
     result.addOutputDirectoriesBuilder().setPath("a/bar").setTreeDigest(barTreeDigest);
-    client.download(result.build(), execRoot, null);
+    client.download(result.build(), execRoot, null, RunRecord.newBuilder());
 
     assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/foo"))).isEqualTo(fooDigest);
     assertThat(DIGEST_UTIL.compute(execRoot.resolve("a/bar/wobble/qux"))).isEqualTo(quxDigest);

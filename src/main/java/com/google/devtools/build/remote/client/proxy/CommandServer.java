@@ -14,31 +14,18 @@
 
 package com.google.devtools.build.remote.client.proxy;
 
-import com.beust.jcommander.JCommander;
-import com.beust.jcommander.ParameterException;
-import com.google.common.collect.Queues;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.google.devtools.build.lib.remote.proxy.FetchRecordRequest;
-import com.google.devtools.build.lib.remote.proxy.FetchRecordResponse;
-import com.google.devtools.build.lib.remote.proxy.RunRecord;
-import com.google.devtools.build.lib.remote.proxy.RunRequest;
-import com.google.devtools.build.lib.remote.proxy.RunResponse;
-import com.google.devtools.build.lib.remote.proxy.RunResult;
-import com.google.devtools.build.lib.remote.proxy.RunResult.Status;
-import com.google.devtools.build.lib.remote.proxy.StatsRequest;
-import com.google.devtools.build.lib.remote.proxy.StatsResponse;
-import com.google.devtools.build.lib.remote.proxy.CommandServiceGrpc.CommandServiceImplBase;
-import com.google.devtools.build.remote.client.AuthAndTLSOptions;
+import com.google.devtools.build.lib.remote.commands.CommandResult.Status;
+import com.google.devtools.build.lib.remote.commands.RunRequest;
+import com.google.devtools.build.lib.remote.commands.RunResponse;
+import com.google.devtools.build.lib.remote.commands.CommandsGrpc.CommandsImplBase;
+import com.google.devtools.build.lib.remote.stats.RunRecord;
 import com.google.devtools.build.remote.client.RecordingOutErr;
 import com.google.devtools.build.remote.client.RemoteClient;
-import com.google.devtools.build.remote.client.RemoteClientOptions.RunRemoteCommand;
-import com.google.devtools.build.remote.client.RemoteOptions;
-import com.google.devtools.build.remote.client.RemoteClientOptions;
 import com.google.devtools.build.remote.client.RemoteRunner;
-import com.google.devtools.build.remote.client.Stats;
 import com.google.devtools.build.remote.client.util.Utils;
 import io.grpc.StatusRuntimeException;
 import io.grpc.Status.Code;
@@ -48,16 +35,19 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-/** A basic implementation of a {@link CommandServiceImplBase} service. */
-final class CommandServer extends CommandServiceImplBase {
+/** A basic implementation of a {@link CommandsImplBase} service. */
+final class CommandServer extends CommandsImplBase {
   private final ListeningExecutorService executorService;
   private final RemoteClient client;
   private final RemoteProxyOptions proxyOptions;
   // TODO(olaola): clear stuff out from time to time.
-  private final ConcurrentLinkedQueue<RunRecord.Builder> records =
-      Queues.newConcurrentLinkedQueue();
+  private final ConcurrentLinkedQueue<RunRecord.Builder> records;
 
-  public CommandServer(RemoteProxyOptions proxyOptions, RemoteClient client) {
+  public CommandServer(
+      RemoteProxyOptions proxyOptions,
+      RemoteClient client,
+      ConcurrentLinkedQueue<RunRecord.Builder> records) {
+    this.records = records;
     this.proxyOptions = proxyOptions;
     this.client = client;
     ThreadPoolExecutor realExecutor =
@@ -92,40 +82,14 @@ final class CommandServer extends CommandServiceImplBase {
   }
 
   @Override
-  public void run(RunRequest req, StreamObserver<RunResponse> responseObserver) {
-    Utils.vlog(client.verbosity(),3,"Received request:\n%s", req);
-    RunRemoteCommand cmdOptions = new RunRemoteCommand();
-    JCommander optionsParser =
-        JCommander.newBuilder()
-            .programName("remote_client")
-            .addObject(new AuthAndTLSOptions()) // Parse, but ignore.
-            .addObject(new RemoteOptions())
-            .addObject(new RemoteClientOptions())
-            .addCommand("run_remote", cmdOptions)
-            .build();
-    optionsParser.setExpandAtSign(false);
-    try {
-      optionsParser.parse(req.getCommandList().toArray(new String[]{}));
-    } catch (ParameterException e) {
-      System.err.println("Unable to parse options: " + e.getLocalizedMessage());
-      responseObserver.onNext(
-          RunResponse.newBuilder()
-              .setResult(
-                  RunResult.newBuilder()
-                      .setStatus(Status.LOCAL_ERROR)
-                      .setExitCode(RemoteRunner.LOCAL_ERROR_EXIT_CODE)
-                      .setMessage("Unable to parse options: " + e.getLocalizedMessage()))
-              .build());
-      responseObserver.onCompleted();
-      return;
-    }
-
+  public void runCommand(RunRequest req, StreamObserver<RunResponse> responseObserver) {
+    Utils.vlog(client.verbosity(), 3, "Received request:\n%s", req);
     RecordingOutErr outErr = new RecordingOutErr();
-    RunRecord.Builder record = client.newFromCommandOptions(cmdOptions);
+    RunRecord.Builder record = client.newFromCommand(req.getCommand());
     addRecord(record);
     ListenableFuture<Void> future =
         executorService.submit(() -> {
-          client.runRemote(cmdOptions, outErr, record, new String[]{});
+          client.runRemote(record, outErr);
           return null;
         });
     future.addListener(
@@ -145,7 +109,7 @@ final class CommandServer extends CommandServiceImplBase {
                   client.verbosity(),
                   1,
                   "%s> Command failed: status %s, exit code %d, message %s",
-                  record.getCommandParameters().getName(),
+                  record.getCommand().getLabels().getCommandId(),
                   status,
                   record.getResult().getExitCode(),
                   record.getResult().getMessage());
@@ -159,51 +123,5 @@ final class CommandServer extends CommandServiceImplBase {
           }
         },
         MoreExecutors.directExecutor());
-  }
-
-  @Override
-  public void stats(StatsRequest req, StreamObserver<StatsResponse> responseObserver) {
-    StatsResponse.Builder response = StatsResponse.newBuilder();
-    if (req.getSummary()) {
-      response.setProxyStats(Stats.computeStats(req, records));
-    }
-    if (req.getFull()) {
-      long frameSize = 0;
-      for (RunRecord.Builder rec : records) {
-        if (!Stats.shouldCountRecord(rec, req)) {
-          continue;
-        }
-        long recordSize = rec.build().getSerializedSize();
-        if (frameSize + recordSize > 4 * 1024 * 1024 - 2000) {
-          responseObserver.onNext(response.build());
-          response.clear();
-          frameSize = 0;
-        }
-        frameSize += recordSize;
-        response.addRunRecords(rec);
-      }
-      if (response.getRunRecordsCount() > 0) {
-        responseObserver.onNext(response.build());
-      }
-    } else {
-      responseObserver.onNext(response.build());
-    }
-    responseObserver.onCompleted();
-  }
-
-  @Override
-  public void fetchRecord(
-      FetchRecordRequest req, StreamObserver<FetchRecordResponse> responseObserver) {
-    for (RunRecord.Builder rec : records) {
-      if (rec.getCommandParameters().getName().equals(req.getCommandId()) &&
-          (req.getInvocationId().isEmpty() ||
-              rec.getCommandParameters().getInvocationId().equals(req.getInvocationId()))) {
-        responseObserver.onNext(FetchRecordResponse.newBuilder().setRecord(rec).build());
-        responseObserver.onCompleted();
-        return;
-      }
-    }
-    responseObserver.onNext(FetchRecordResponse.getDefaultInstance());
-    responseObserver.onCompleted();
   }
 }

@@ -1,0 +1,322 @@
+// Copyright 2019 The Bazel Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// This file contains the protocol used to communicate between the Bazel client
+// and the server. At a high level clients may call the CommandServer.run rpc
+// to initiates a Bazel command and CommandServer.cancel to cancel an in-flight
+// command. CommandServer.ping may be used to check for server liveness without
+// executing any commands. See documentation of individual messages for more
+// details.
+syntax = "proto3";
+
+package remote_client;
+
+import "build/bazel/remote/execution/v2/remote_execution.proto";
+import "google/protobuf/timestamp.proto";
+import "src/main/proto/commands.proto";
+
+option java_package = "com.google.devtools.build.lib.remote.stats";
+option java_multiple_files = true;
+option java_outer_classname = "StatsProto";
+
+service Stats {
+  // Gets information about finished and currently executing commands.
+  rpc GetStats (StatsRequest) returns (stream StatsResponse) {}
+}
+
+// Used in Stats rpc: query the proxy server about the stats of its current
+// state.
+message StatsRequest {
+  // If set, returns the full list of saved RunRecords.
+  bool fetch_records = 1;
+
+  // If set, the server will compute the aggregate stats of all records.
+  bool compute_aggregate = 2;
+
+  // Restrict the considered records to this subset.
+  SliceOptions slice_options = 3;
+}
+
+// Used in Stats rpc: streamed proxy response.
+message StatsResponse {
+  // If compute_aggregate was set, the proxy-computed stats on the requested
+  // records. Will only be set in the first response.
+  ProxyStats proxy_stats = 1;
+
+  // If fetch_records was set, the full list of proxy records.
+  repeated RunRecord run_records = 2;
+}
+
+// Options for restricting the set of records to a particular subset.
+message SliceOptions {
+  // Records that begin processing after from_ts.
+  google.protobuf.Timestamp from_ts = 3;
+
+  // Records that end processing before to_ts.
+  google.protobuf.Timestamp to_ts = 4;
+
+  // Records having a superset of these labels.
+  Labels labels = 5;
+
+  // Finished records having this run status.
+  CommandResult.Status status = 6;
+}
+
+// Statistics of all proxy executions at a given time.
+message ProxyStats {
+  // Finished records grouped by status.
+  message StatByStatus {
+    // Execution status.
+    CommandResult.Status status = 1;
+
+    // Number of records having this status.
+    int32 count = 2;
+  }
+
+  // Records grouped by execution stage.
+  message StatByStage {
+    // Execution stage.
+    RunRecord.Stage stage = 1;
+
+    // Number of records having this stage.
+    int32 count = 2;
+  }
+
+  // The timestamp the earliest saved record was received.
+  google.protobuf.Timestamp start_ts = 1;
+
+  // The timestamp the latest saved record has finished processing.
+  google.protobuf.Timestamp end_ts = 2;
+
+  // Finished records grouped by status.
+  repeated StatByStatus finished_by_status = 3;
+
+  // All records grouped by execution stage.
+  repeated StatByStage records_by_stage = 4;
+
+  // Overall number of blobs that needed to be uploaded to CAS.
+  int32 cas_cache_misses = 5;
+
+  // Overall CAS hit ratio.
+  float cas_cache_hit_ratio = 6;
+
+  // Overall action cache hit ratio.
+  float ac_cache_hit_ratio = 7;
+
+  // Number of records that failed remotely and re-executed locally.
+  int32 local_fallback_total = 8;
+
+  // Statistics of all records properties.
+  ActionStats action_stats = 9;
+
+  // Statistics of the proxy run times.
+  LocalExecutionStats local_execution_stats = 10;
+
+  // Statistics of the remote server run times.
+  RemoteExecutionStats remote_execution_stats = 11;
+}
+
+// Stats received from the remote server.
+message RemoteExecutionStats {
+  // Time ms from when the request was received to when it was passed to the
+  // remote worker.
+  Stat queued = 1;
+
+  // Total time ms the action spent on the remote worker.
+  Stat worker = 2;
+
+  // Time ms the action spent on the remote worker downloading inputs from CAS.
+  Stat input_fetch = 3;
+
+  // Time ms the action spent on the remote worker executing the command.
+  Stat execution = 4;
+
+  // Time ms the action spent on the remote worker uploading outputs to CAS.
+  Stat output_upload = 5;
+}
+
+// Stats of the client proxy.
+message LocalExecutionStats {
+  // Time ms from receiving the action to processing start.
+  Stat queued = 1;
+
+  // Time ms taken for computing the input Merkle tree.
+  Stat compute_input_tree = 2;
+
+  // Time ms taken for checking the remote action cache.
+  Stat check_action_cache = 3;
+
+  // Time ms taken for uploading the inputs to remote CAS.
+  Stat upload_inputs = 4;
+
+  // Time ms taken for remote execution.
+  Stat execute = 5;
+
+  // Time ms taken for downloading the outputs from remote CAS.
+  Stat download_outputs = 6;
+
+  // Overall time ms spent on the proxy.
+  Stat total_local = 7;
+}
+
+// Stats of action properties.
+message ActionStats {
+  // Number of overall action inputs (input files and other blobs).
+  Stat num_inputs = 1;
+
+  // Total bytes of all the inputs.
+  Stat total_input_bytes = 2;
+
+  // Number of actual produced action outputs (not listed outputs).
+  Stat num_outputs = 3;
+
+  // Total bytes of actual produced outputs.
+  Stat total_output_bytes = 4;
+}
+
+// A statistic of a single execution metric, for example time_ms spent in
+// a given stage.
+message Stat {
+  // Commands for which the stat value was the highest.
+  message Outlier {
+    // The command id.
+    string id = 1;
+
+    // The recorded outlier value.
+    int64 value = 2;
+  }
+  // The median stat value.
+  double median = 1;
+
+  // The highest 75% stat value.
+  double percentile_75 = 2;
+
+  // The highest 85% stat value.
+  double percentile_85 = 3;
+
+  // The highest 95% stat value.
+  double percentile_95 = 4;
+
+  // Simple sum of all values.
+  int64 total = 5;
+
+  // For time stats, this is the sum of non-overlapping intervals.
+  int64 total_parallel_time_ms = 6;
+
+  // Commands for which the stat value was the highest.
+  repeated Outlier outliers = 7;
+}
+
+// The full record of a single command execution.
+message RunRecord {
+  // Execution stages, in topological order.
+  enum Stage {
+    UNKNOWN = 0;
+    QUEUED = 1;
+    COMPUTING_INPUT_TREE = 2;
+    CHECKING_ACTION_CACHE = 3;
+    UPLOADING_INPUTS = 4;
+    EXECUTING = 5;
+    DOWNLOADING_OUTPUTS = 6;
+    LOCAL_FALLBACK_EXECUTING = 7;
+    LOCAL_FALLBACK_UPLOADING_OUTPUTS = 8;
+    FINISHED = 9;
+  }
+  // The current execution stage.
+  Stage stage = 1;
+
+  // The command to execute.
+  Command command = 2;
+
+  // Result, if available.
+  CommandResult result = 3;
+
+  // Properties of the action.
+  ActionMetadata action_metadata = 4;
+
+  // Timestamps of the proxy execution.
+  LocalTimestamps local_timestamps = 5;
+
+  // If action was run remotely, these are the timestamps returned by the remote
+  // server.
+  build.bazel.remote.execution.v2.ExecutedActionMetadata remote_metadata = 6;
+
+  // Saved failed remote result, before local re-execution.
+  CommandResult result_before_local_fallback = 7;
+
+  // Full execution data, if available (not saved by default).
+  ExecutionData execution_data = 8;
+}
+
+// Full execution data that can be used to debug cache misses.
+message ExecutionData {
+  // All the action input files, including traversed input directories.
+  repeated File input_files = 1;
+
+  // All the local files that needed to be uploaded to remote CAS.
+  repeated string input_file_cas_misses = 5;
+
+  // Actual produced output files.
+  repeated File output_files = 2;
+
+  // Command proto digest (command proto is one of the input blobs).
+  build.bazel.remote.execution.v2.Digest command_digest = 3;
+
+  // Action proto digest (action proto is one of the input blobs).
+  build.bazel.remote.execution.v2.Digest action_digest = 4;
+}
+
+// Collection of timestamps of various proxy execution stages.
+message LocalTimestamps {
+  google.protobuf.Timestamp queued_start = 1;
+  google.protobuf.Timestamp queued_end = 2;
+  google.protobuf.Timestamp input_tree_start = 3;
+  google.protobuf.Timestamp input_tree_end = 4;
+  google.protobuf.Timestamp check_action_cache_start = 5;
+  google.protobuf.Timestamp check_action_cache_end = 6;
+  google.protobuf.Timestamp upload_inputs_start = 7;
+  google.protobuf.Timestamp upload_inputs_end = 8;
+  google.protobuf.Timestamp execute_start = 9;
+  google.protobuf.Timestamp execute_end = 10;
+  google.protobuf.Timestamp download_outputs_start = 11;
+  google.protobuf.Timestamp download_outputs_end = 12;
+  // TODO(olaola): add more when local fallback is implemented.
+}
+
+// Properties of an executed action.
+message ActionMetadata {
+  // Number of overall action inputs (input files and other blobs).
+  int32 num_inputs = 1;
+
+  // Total bytes of all the inputs.
+  int64 total_input_bytes = 2;
+
+  // Number of actual produced action outputs (not listed outputs).
+  int32 num_outputs = 3;
+
+  // Total bytes of actual produced outputs.
+  int64 total_output_bytes = 4;
+
+  // Number of inputs that needed to be uploaded to CAS.
+  int32 cas_cache_misses = 5;
+}
+
+// Properties of a file.
+message File {
+  // Path to the file relative to the execution root.
+  string path = 1;
+
+  // Digest of the file's contents.
+  build.bazel.remote.execution.v2.Digest digest = 2;
+}
