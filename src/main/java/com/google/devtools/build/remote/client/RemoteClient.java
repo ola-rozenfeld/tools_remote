@@ -892,6 +892,19 @@ public class RemoteClient {
         .build());
   }
 
+  public CommandResult runRemote(
+      com.google.devtools.build.lib.remote.commands.Command command) {
+    return runRemote(command, OutErr.SYSTEM_OUT_ERR);
+  }
+
+  public CommandResult runRemote(
+      com.google.devtools.build.lib.remote.commands.Command command,
+      OutErr outErr) {
+    RunRecord.Builder rec = newFromCommand(command);
+    runRemote(rec, outErr);
+    return rec.getResult();
+  }
+
   public void runRemote(RunRecord.Builder record, OutErr outErr) {
     if (Strings.isNullOrEmpty(clientOptions.proxy)) {
       getRunner().runRemote(record, outErr);
