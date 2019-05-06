@@ -174,8 +174,8 @@ string Trim(const string& cmd) {
   size_t st_idx = 0;
   size_t ed_idx = cmd.length() - 1;
 
-  while (st_idx <= ed_idx && !absl::ascii_isalpha(cmd[st_idx])) ++st_idx;
-  while (ed_idx > st_idx && !absl::ascii_isalpha(cmd[ed_idx])) --ed_idx;
+  while (st_idx <= ed_idx && !absl::ascii_isalnum(cmd[st_idx])) ++st_idx;
+  while (ed_idx > st_idx && !absl::ascii_isalnum(cmd[ed_idx])) --ed_idx;
 
   return cmd.substr(st_idx, ed_idx - st_idx + 1);
 }
@@ -203,6 +203,15 @@ void FindFiles(const string& cmd, set<string>* files) {
   // Ex: -Wl,--version-script,frameworks/rs/libRS.map
   if (cmd.find(",") != string::npos) {
     for (const auto& c : absl::StrSplit(cmd, ',', absl::SkipEmpty())) {
+      FindFiles(string(c), files);
+    }
+    return;
+  }
+  // Certain compile commands have compile options specified as
+  // -Wl,blacklist=foo/bar/blacklist.txt. So split by '=' as well
+  // and check if each component is a file or not.
+  if (cmd.find("=") != string::npos) {
+    for (const auto& c : absl::StrSplit(cmd, '=', absl::SkipEmpty())) {
       FindFiles(string(c), files);
     }
     return;
@@ -387,6 +396,7 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
       // Fall back on computing from the command, but warn.
       cerr << cmd_id << "> Include processor did not return results, computing from args\n";
     }
+    FindAllFilesFromCommand(argc, argv, inputs);
   } else if (is_header_abi_dumper) {
     use_args_inputs = true;
     *is_compile = true;
