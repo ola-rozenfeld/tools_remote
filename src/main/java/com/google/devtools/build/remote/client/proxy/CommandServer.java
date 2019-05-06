@@ -101,6 +101,7 @@ final class CommandServer extends CommandsImplBase {
                     .setStdout(outErr.outAsLatin1())
                     .setStderr(outErr.errAsLatin1())
                     .setResult(record.getResult())
+                    .setLabels(record.getCommand().getLabels())
                     .build());
             responseObserver.onCompleted();
             Status status = record.getResult().getStatus();
