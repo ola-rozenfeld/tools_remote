@@ -455,11 +455,6 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
     inputs->insert(argv[argc-1]);  // For Android compile commands, the compiled file is last.
   } // Linker commands need special treatment as well.
 
-  if (is_assembler) {
-    // For now disable assemble compiles and just run them locally since they
-    // fail on AP@9 builds.
-    *is_compile = false;
-  }
   return 0;
 }
 
