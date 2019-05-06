@@ -104,7 +104,7 @@ string NormalizedRelativePath(const string& cwd, const string& path) {
   vector<string> segments = absl::StrSplit(rel_path, '/', absl::SkipEmpty());
   auto iter = segments.begin();
   while (iter != segments.end()) {
-    if (*iter == ".") {
+    if (*iter == "." && iter + 1 != segments.end()) {
       iter = segments.erase(iter);
       continue;
     }
@@ -450,7 +450,7 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
   inputs->insert(GetCompilerDir(argv[0]));  // For both compile and link commands?
   if (is_assembler) {
     // Horrible hack for Android 7 assembly actions.
-    inputs->insert("prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/arm-linux-androideabi/bin/as");
+    inputs->insert("prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/arm-linux-androideabi/bin/");
   }
   if (is_compile) {
     inputs->insert(argv[argc-1]);  // For Android compile commands, the compiled file is last.
