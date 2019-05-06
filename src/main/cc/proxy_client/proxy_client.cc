@@ -457,6 +457,7 @@ int CreateRunRequest(int argc, char** argv, const char** env,
   Labels* labels = command->mutable_labels();
   labels->set_command_id(cmd_id);
   labels->set_invocation_id(FLAGS_invocation_id);
+  labels->set_tool_name("rbecc");
   ExecutionOptions* exec_options = command->mutable_execution_options();
   exec_options->set_accept_cached(FLAGS_accept_cached);
   exec_options->set_save_execution_data(FLAGS_save_exec_data);
