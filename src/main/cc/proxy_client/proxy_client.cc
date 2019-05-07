@@ -102,9 +102,14 @@ string NormalizedRelativePath(const string& cwd, const string& path) {
       ? path.substr(cwd.length() + 1, path.length())
       : path;
   vector<string> segments = absl::StrSplit(rel_path, '/', absl::SkipEmpty());
+  const size_t num_segments = segments.size();
+
   auto iter = segments.begin();
   while (iter != segments.end()) {
-    if (*iter == "." && iter + 1 != segments.end()) {
+    // Delete "." unless its the only segment, in which case preserve it as it is.
+    // This is useful when include flags are of the form "-I . " which is used to
+    // include the current directory in header search path.
+    if (*iter == "." && num_segments > 1) {
       iter = segments.erase(iter);
       continue;
     }
