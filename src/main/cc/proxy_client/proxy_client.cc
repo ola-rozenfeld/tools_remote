@@ -102,9 +102,14 @@ string NormalizedRelativePath(const string& cwd, const string& path) {
       ? path.substr(cwd.length() + 1, path.length())
       : path;
   vector<string> segments = absl::StrSplit(rel_path, '/', absl::SkipEmpty());
+  const size_t num_segments = segments.size();
+
   auto iter = segments.begin();
   while (iter != segments.end()) {
-    if (*iter == ".") {
+    // Delete "." unless its the only segment, in which case preserve it as it is.
+    // This is useful when include flags are of the form "-I . " which is used to
+    // include the current directory in header search path.
+    if (*iter == "." && num_segments > 1) {
       iter = segments.erase(iter);
       continue;
     }
@@ -450,7 +455,7 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
   inputs->insert(GetCompilerDir(argv[0]));  // For both compile and link commands?
   if (is_assembler) {
     // Horrible hack for Android 7 assembly actions.
-    inputs->insert("prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/arm-linux-androideabi/bin/as");
+    inputs->insert("prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/arm-linux-androideabi/bin/");
   }
   if (is_compile) {
     inputs->insert(argv[argc-1]);  // For Android compile commands, the compiled file is last.
