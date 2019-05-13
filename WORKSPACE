@@ -25,22 +25,22 @@ http_archive(
 # Needed for C++ gRPC.
 http_archive(
     name = "com_github_grpc_grpc",
-    sha256 = "34ed95b727e7c6fcbf85e5eb422e962788e21707b712fdb4caf931553c2c6dbc",
-    strip_prefix = "grpc-1.17.2",
+    sha256 = "ba8b08a697b66e14af35da07753583cf32ff3d14dcd768f91b1bbe2e6c07c349",
+    strip_prefix = "grpc-1.20.1",
     urls = [
-        "https://github.com/grpc/grpc/archive/v1.17.2.tar.gz",
-        "https://mirror.bazel.build/github.com/grpc/grpc/archive/v1.17.2.tar.gz",
+        "https://github.com/grpc/grpc/archive/v1.20.1.tar.gz",
+        "https://mirror.bazel.build/github.com/grpc/grpc/archive/v1.20.1.tar.gz",
     ],
 )
 
 git_repository(
-    name   = "com_github_gflags_gflags",
-    commit = "30dbc81fb5ffdc98ea9b14b1918bfe4e8779b26e", # v2.2.0 + fix of include path
-    remote = "https://github.com/gflags/gflags.git"
+    name = "com_github_gflags_gflags",
+    commit = "30dbc81fb5ffdc98ea9b14b1918bfe4e8779b26e",  # v2.2.0 + fix of include path
+    remote = "https://github.com/gflags/gflags.git",
 )
 
 bind(
-    name   = "gflags",
+    name = "gflags",
     actual = "@com_github_gflags_gflags//:gflags",
 )
 
