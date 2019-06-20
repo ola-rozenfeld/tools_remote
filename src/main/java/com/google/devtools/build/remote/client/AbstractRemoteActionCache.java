@@ -43,6 +43,7 @@ import io.grpc.Context;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -414,7 +415,12 @@ public abstract class AbstractRemoteActionCache implements AutoCloseable {
 
   /** Download a file (that is not a directory). The content is fetched from the digest. */
   public ListenableFuture<Void> downloadFile(Path path, Digest digest) throws IOException {
-    Files.createDirectories(path.getParent());
+    try {
+      Files.createDirectories(path.getParent());
+    } catch (FileAlreadyExistsException e) {
+      // This can only happen if the path parent is a symlink.
+      // TODO(olaola): verify the symlink target it a directory..
+    }
     if (digest.getSizeBytes() == 0) {
       // Handle empty file locally.
       Files.write(path, new byte[0]);
