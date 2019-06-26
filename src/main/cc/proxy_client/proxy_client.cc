@@ -345,17 +345,22 @@ void ExpandFileArguments(set<string>* args) {
 }
 
 int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, const string& cmd_id,
-                  bool *is_compile, bool* is_javac, set<string>* inputs) {
+                  bool *is_compile, bool* is_javac, bool *is_link, bool *is_assembler,
+                  bool *is_header_abi_dumper, set<string>* inputs) {
+  *is_compile = false;
+  *is_javac = IsJavacAction(argc, argv);
+  *is_link = false;
+  *is_assembler = false;
+  *is_header_abi_dumper = string(argv[1]).find("header-abi-dumper") != std::string::npos;
   set<string> inputs_from_args;
   if (FLAGS_inputs == "") {
     cerr << "Missing inputs\n";
     return 1;
   }
-  bool is_assembler = false;
   for (const auto& input : absl::StrSplit(FLAGS_inputs, ',', absl::SkipEmpty())) {
     inputs_from_args.insert(string(input));
     if (absl::EndsWith(input, ".S") ||  absl::EndsWith(input, ".s")) {
-      is_assembler = true;
+      *is_assembler = true;
     }
   }
   // Expand file:<filename> args into the contents of the file itself.
@@ -364,8 +369,6 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
   ExpandFileArguments(&inputs_from_args);
 
   bool next_is_input = false;
-  bool is_link = false;
-  *is_compile = false;
   set<string> cc_input_args({"-I", "-c", "-isystem", "-quote"});
   vector<string> input_prefixes({"-L", "--gcc_toolchain"});
   for (int i = 0; i < argc; ++i) {
@@ -379,17 +382,15 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
     for (const string& prefix : input_prefixes) {
       if (absl::StartsWith(argv[i], prefix)) {
         inputs_from_args.insert(argv[i] + prefix.length());
-        is_link = is_link || (prefix == "-L");
+        *is_link = *is_link || (prefix == "-L");
       }
     }
     if (!strcmp(argv[i], "-D__ASSEMBLY__")) {
-        is_assembler = true;
+      *is_assembler = true;
     }
   }
 
   bool use_args_inputs = false;
-  *is_javac = IsJavacAction(argc, argv);
-  bool is_header_abi_dumper = string(argv[1]).find("header-abi-dumper") != std::string::npos;
   if (*is_compile) {
     int proc_res = GetInputsFromIncludeProcessor(cmd_id, argc, argv, env, cwd, inputs);
     if (proc_res != 0) {
@@ -402,7 +403,7 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
       cerr << cmd_id << "> Include processor did not return results, computing from args\n";
     }
     FindAllFilesFromCommand(argc, argv, inputs);
-  } else if (is_header_abi_dumper) {
+  } else if (*is_header_abi_dumper) {
     use_args_inputs = true;
     *is_compile = true;
     vector<const char*> new_argv;
@@ -493,7 +494,10 @@ int CreateRunRequest(int argc, char** argv, const char** env,
     command->add_output_files(NormalizedRelativePath(cwd, output));
   }
   set<string> inputs;
-  int compute_input_res = ComputeInputs(argc, argv, env, cwd, cmd_id, is_compile, is_javac, &inputs);
+  bool is_link, is_assembler, is_header_abi_dumper;
+  int compute_input_res = ComputeInputs(
+      argc, argv, env, cwd, cmd_id, is_compile, is_javac, &is_link, &is_assembler,
+      &is_header_abi_dumper, &inputs);
   if (compute_input_res != 0) {
     cerr << cmd_id << "> Failed to compute inputs\n";
     return compute_input_res;
@@ -552,6 +556,23 @@ int CreateRunRequest(int argc, char** argv, const char** env,
     unsigned int eq_index = nameval.find("=");
     string name = nameval.substr(0, eq_index);
     cmd_labels[name] = nameval.substr(eq_index+1);
+  }
+  if (*is_compile) {
+    cmd_labels["c++"] = "true";
+    cmd_labels["compile"] = "true";
+  }
+  if (is_link) {
+    cmd_labels["c++"] = "true";
+    cmd_labels["link"] = "true";
+  }
+  if (is_assembler) {
+    cmd_labels["asm"] = "true";  // Assembler is also C++.
+  }
+  if (*is_javac) {
+    cmd_labels["java"] = "true";
+  }
+  if (is_header_abi_dumper) {
+    cmd_labels["abi"] = "true";
   }
   return 0;
 }
@@ -686,8 +707,10 @@ int SelectAndRunCommand(int argc, char** argv, const char** env) {
     std::chrono::time_point<std::chrono::high_resolution_clock> start_time, end_time;
     start_time = std::chrono::high_resolution_clock::now();
     set<string> includes;
-    bool is_compile, is_javac;
-    int result = ComputeInputs(argc, argv, env, GetCwd(), "cmd", &is_compile, &is_javac, &includes);
+    bool is_compile, is_javac, is_link, is_assembler, is_header_abi_dumper;
+    int result = ComputeInputs(
+        argc-sep_idx-1, &argv[sep_idx+1], env, GetCwd(), "cmd", &is_compile, &is_javac, &is_link,
+        &is_assembler, &is_header_abi_dumper, &includes);
     cout << "Computed inputs:\n";
     for (const string& i : includes) {
       cout << i << "\n";
@@ -695,6 +718,12 @@ int SelectAndRunCommand(int argc, char** argv, const char** env) {
     end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> time = end_time - start_time;
     cerr << "Time: " << time.count() * 1000 << " msec\n";
+    cout << "Action types: " << std::boolalpha
+         << "is_compile: " << is_compile << ", "
+         << "is_link: " << is_link << ", "
+         << "is_javac: " << is_javac << ", "
+         << "is_assembler: " << is_assembler << ", "
+         << "is_header_abi_dumper: " << is_header_abi_dumper << "\n";
     return result;
   }
 
