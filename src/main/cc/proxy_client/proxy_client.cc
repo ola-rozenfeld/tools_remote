@@ -53,7 +53,7 @@ DEFINE_int32(proxy_instances, 1, "Number of remote client proxy instances");
 DEFINE_string(proxy_address, "localhost:8080", "Address of the remote client proxy");
 DEFINE_int32(include_processor_server_instances, 1, "Number of include processor server instances");
 DEFINE_string(include_processor_server_address, "localhost:8070", "Address of the include processor server");
-DEFINE_string(command, "", "Type of command: run, list_includes, include_stats");
+DEFINE_string(command, "run", "Type of command: run, list_includes, include_stats");
 DEFINE_string(inputs, "", "Comma-seperated list of input files/directories");
 DEFINE_string(outputs, "", "Comma-seperated list of output files");
 DEFINE_string(env_whitelist, "", "Comma-seperated list of environment variables to "
@@ -353,14 +353,12 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
   *is_assembler = false;
   *is_header_abi_dumper = string(argv[1]).find("header-abi-dumper") != std::string::npos;
   set<string> inputs_from_args;
-  if (FLAGS_inputs == "") {
-    cerr << "Missing inputs\n";
-    return 1;
-  }
-  for (const auto& input : absl::StrSplit(FLAGS_inputs, ',', absl::SkipEmpty())) {
-    inputs_from_args.insert(string(input));
-    if (absl::EndsWith(input, ".S") ||  absl::EndsWith(input, ".s")) {
-      *is_assembler = true;
+  if (FLAGS_inputs != "") {
+    for (const auto& input : absl::StrSplit(FLAGS_inputs, ',', absl::SkipEmpty())) {
+      inputs_from_args.insert(string(input));
+      if (absl::EndsWith(input, ".S") ||  absl::EndsWith(input, ".s")) {
+        *is_assembler = true;
+      }
     }
   }
   // Expand file:<filename> args into the contents of the file itself.
@@ -465,6 +463,20 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
   return 0;
 }
 
+int FindOutputsForCompileCommand(int argc, char** argv, set<string> *outputs) {
+  for (int i = 0; i < argc; ++i) {
+    if (absl::EndsWith(argv[i], ".o") || absl::EndsWith(argv[i], ".o.d")) {
+      outputs->insert(argv[i]);
+    }
+  }
+
+  if (outputs->size() == 0) {
+    cerr << "Unable to find outputs\n";
+    return 1;
+  }
+  return 0;
+}
+
 int CreateRunRequest(int argc, char** argv, const char** env,
                      const string& cmd_id, RunRequest* req,
                      bool* is_compile, bool* is_javac) {
@@ -478,21 +490,7 @@ int CreateRunRequest(int argc, char** argv, const char** env,
   exec_options->set_accept_cached(FLAGS_accept_cached);
   exec_options->set_save_execution_data(FLAGS_save_exec_data);
   string cwd = GetCwd();
-  set<string> outputs;
-  if (FLAGS_outputs == "") {
-    cerr << "Missing outputs\n";
-    return 1;
-  }
-  for (const auto& output : absl::StrSplit(FLAGS_outputs, ',', absl::SkipEmpty())) {
-    outputs.insert(string(output));
-    if (absl::EndsWith(output, ".o")) {
-      outputs.insert(absl::StrCat(output, ".d"));
-      outputs.insert(absl::StrCat(output.substr(0, output.length() - 2), ".d"));
-    }
-  }
-  for (const auto& output : outputs) {
-    command->add_output_files(NormalizedRelativePath(cwd, output));
-  }
+
   set<string> inputs;
   bool is_link, is_assembler, is_header_abi_dumper;
   int compute_input_res = ComputeInputs(
@@ -502,32 +500,35 @@ int CreateRunRequest(int argc, char** argv, const char** env,
     cerr << cmd_id << "> Failed to compute inputs\n";
     return compute_input_res;
   }
-  bool allow_outputs_under_inputs = *is_javac || FLAGS_allow_out_under_in;
-  bool allow_output_directories_as_inputs = *is_javac || FLAGS_allow_out_dirs;
-  for (const auto& input : inputs) {
-    string inp = NormalizedRelativePath(cwd, input);
-    bool is_directory = false;
-    if (inp.empty() || inp == "." || !PathExists(inp, &is_directory)) {
-      continue;
-    }
-    if (!allow_output_directories_as_inputs && is_directory && absl::StartsWith(inp, FLAGS_out_dir + "/")) {
-      continue;
-    }
 
-    if (!allow_outputs_under_inputs) {
-      bool found = false;
-      for (const auto& output : outputs) {
-        if (absl::StartsWith(output, inp)) {
-          found = true;
-          break;
-        }
-      }
-      if (found) {
-        continue;
+  if (!*is_compile) {
+    cerr << "This version of rbecc for android-shadow-ci supports only C++ compile commands\n";
+    return 1;
+  }
+
+  set<string> outputs;
+  if (FLAGS_outputs != "") {
+    for (const auto& output : absl::StrSplit(FLAGS_outputs, ',', absl::SkipEmpty())) {
+      outputs.insert(string(output));
+      if (absl::EndsWith(output, ".o")) {
+        outputs.insert(absl::StrCat(output, ".d"));
+        outputs.insert(absl::StrCat(output.substr(0, output.length() - 2), ".d"));
       }
     }
-    command->add_inputs(inp);
+  } else {
+    if (FindOutputsForCompileCommand(argc, argv, &outputs) != 0) {
+      cerr << "Finding outputs from command failed\n";
+      return 1;
+    }
   }
+  for (const auto& output : outputs) {
+    command->add_output_files(NormalizedRelativePath(cwd, output));
+  }
+
+  for (const auto& input : inputs) {
+    command->add_inputs(input);
+  }
+
   for (int i = 0; i < argc; ++i) {
     command->add_args(NormalizedRelativePath(cwd, string(argv[i])));
   }
@@ -683,51 +684,11 @@ int ExecuteCommand(int argc, char** argv, const char** env) {
 int SelectAndRunCommand(int argc, char** argv, const char** env) {
   srand(time(nullptr));
   gflags::SetUsageMessage("RBE client for remote proxy");
-  int sep_idx = argc;
-  for (int i = 1; i < argc; i++) {
-    if (!strcmp(argv[i], "--")) {
-      sep_idx = i;
-      break;
-    }
-  }
-  gflags::ParseCommandLineFlags(&sep_idx, &argv, false);
-  if (FLAGS_command == "run") {
-      if (sep_idx == argc) {
-        cout << "You set the command to 'run'.\n";
-         cout << "Usage: " << gflags::ProgramInvocationShortName() <<
-              " [--arg=val] --command=run -- [full command]\n";
-         return 1;
-      }
-      return ExecuteCommand(argc-sep_idx-1, &argv[sep_idx+1], env);
-  }
-  if (FLAGS_command == "include_stats") {
-    return IncludeProcessorStats();
-  }
-  if (FLAGS_command == "list_includes") {
-    std::chrono::time_point<std::chrono::high_resolution_clock> start_time, end_time;
-    start_time = std::chrono::high_resolution_clock::now();
-    set<string> includes;
-    bool is_compile, is_javac, is_link, is_assembler, is_header_abi_dumper;
-    int result = ComputeInputs(
-        argc-sep_idx-1, &argv[sep_idx+1], env, GetCwd(), "cmd", &is_compile, &is_javac, &is_link,
-        &is_assembler, &is_header_abi_dumper, &includes);
-    cout << "Computed inputs:\n";
-    for (const string& i : includes) {
-      cout << i << "\n";
-    }
-    end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> time = end_time - start_time;
-    cerr << "Time: " << time.count() * 1000 << " msec\n";
-    cout << "Action types: " << std::boolalpha
-         << "is_compile: " << is_compile << ", "
-         << "is_link: " << is_link << ", "
-         << "is_javac: " << is_javac << ", "
-         << "is_assembler: " << is_assembler << ", "
-         << "is_header_abi_dumper: " << is_header_abi_dumper << "\n";
-    return result;
-  }
 
-  return 35;
+  // In shadow-ci mode of rbecc, we won't pass in "--" and
+  // aren't really making use of flags specified via command-line
+  // since we don't modify ninja to pass in CLI flags.
+  return ExecuteCommand(argc - 1, &argv[1], env);
 }
 
 }  // namespace remote_client
