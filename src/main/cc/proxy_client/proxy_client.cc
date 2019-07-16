@@ -35,6 +35,7 @@
 #include "src/main/proto/include_processor.grpc.pb.h"
 
 #define INCLUDE_PROCESSOR_PROXY_FAILURE 44
+#define UNSUPPORTED_REMOTE_COMMAND 55
 
 DEFINE_bool(local_fallback, true, "Fallback to local execution if remote "
             "execution fails");
@@ -465,7 +466,7 @@ int ComputeInputs(int argc, char** argv, const char** env, const string& cwd, co
 
 int FindOutputsForCompileCommand(int argc, char** argv, set<string> *outputs) {
   for (int i = 0; i < argc; ++i) {
-    if (absl::EndsWith(argv[i], ".o") || absl::EndsWith(argv[i], ".o.d")) {
+    if (absl::EndsWith(argv[i], ".o") || absl::EndsWith(argv[i], ".d")) {
       outputs->insert(argv[i]);
     }
   }
@@ -503,7 +504,7 @@ int CreateRunRequest(int argc, char** argv, const char** env,
 
   if (!*is_compile) {
     cerr << "This version of rbecc for android-shadow-ci supports only C++ compile commands\n";
-    return 1;
+    return UNSUPPORTED_REMOTE_COMMAND;
   }
 
   set<string> outputs;
@@ -639,6 +640,10 @@ int ExecuteCommand(int argc, char** argv, const char** env) {
   RunRequest req;
   bool is_compile, is_javac;
   int create_run_res = CreateRunRequest(argc, argv, env, cmd_id, &req, &is_compile, &is_javac);
+  if (create_run_res == UNSUPPORTED_REMOTE_COMMAND) {
+    cout << "Falling back to local execution " << cmd_id << "\n";
+    return execvp(args[0], const_cast<char**>(args.data()));
+  }
   if (create_run_res != 0) {
     return create_run_res;  // Failed to create request.
   }
