@@ -116,6 +116,11 @@ string NormalizedRelativePath(const string& cwd, const string& path) {
     }
 
     auto prev_iter = iter - 1;
+    if (*iter == ".." && iter == segments.begin()) {
+      // confused-face.gif - this refers to paths outside the exec root, so dont normalize
+      // and just return it.
+      return path;
+    }
     if (*iter == ".." && prev_iter->find("$") == string::npos) {
       // If the previous segment has any one of the following characters,
       // don't erase the whole previous segment but instead erase only the
