@@ -20,12 +20,20 @@ cc_library(
         "//src/main/proto:include_processor_cc_proto",
         "@com_google_absl//absl/strings",
     ],
+    linkstatic = True,
+    features = [
+        "fully_static_link",
+    ],
 )
 
 cc_binary(
     name = "proxy_client",
     srcs = ["proxy_client_main.cc"],
     deps = [":proxy_client_lib"],
+    linkstatic = True,
+    features = [
+        "fully_static_link",
+    ],
 )
 
 cc_binary(
